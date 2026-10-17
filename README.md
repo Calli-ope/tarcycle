@@ -36,8 +36,7 @@ The first route request downloads and caches the Tartu bicycle graph in
 
 DTM files in `data/` matching `*_dtm_5m.tif` are loaded automatically. Their
 elevation is sampled along OSM edge geometry and cached as uphill grade
-attributes in the graph. The current four tiles cover central Tartu; add
-neighbouring tiles if routes should use terrain outside their bounds.
+attributes in the graph. The current four tiles cover central Tartu.
 
 The current route is a custom shortest path, not a guaranteed globally
 optimal cycling route. It prefers dedicated cycleways, cycleway tags on roads,
