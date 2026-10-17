@@ -6,9 +6,13 @@ from urllib.request import Request, urlopen
 
 import networkx as nx
 import osmnx as ox
+import geopandas as gpd
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from pyproj import Transformer
+from shapely.geometry import LineString
+from shapely.ops import unary_union
 
 from .models import RoutingPreferences
 from .router import NetworkXRouter
@@ -19,6 +23,7 @@ from .terrain import TerrainModel
 ROOT_DIR = Path(__file__).resolve().parent.parent
 STATIONS_FILE = ROOT_DIR / "data" / "Rattaparklad.csv"
 GRAPH_FILE = ROOT_DIR / "cache" / "tartu_bike.graphml"
+WATER_FILE = ROOT_DIR / "cache" / "tartu_water.geojson"
 FRONTEND_DIR = ROOT_DIR / "frontend"
 TERRAIN_DIR = ROOT_DIR / "data"
 
@@ -47,9 +52,11 @@ def router() -> NetworkXRouter:
         ox.save_graphml(graph, GRAPH_FILE)
     if not isinstance(graph, nx.MultiDiGraph):
         raise TypeError("The cached OSM graph must be a directed multigraph.")
-    if graph.graph.get("terrain_model") != "dtm_5m_v2":
+    if graph.graph.get("terrain_model") != "dtm_5m_v2" or graph.graph.get("water_model") != "osm_water_v3":
         add_terrain_attributes(graph)
+        add_water_attributes(graph)
         graph.graph["terrain_model"] = "dtm_5m_v2"
+        graph.graph["water_model"] = "osm_water_v3"
         ox.save_graphml(graph, GRAPH_FILE)
     return NetworkXRouter(graph)
 
@@ -71,6 +78,39 @@ def add_terrain_attributes(graph: nx.MultiDiGraph) -> None:
             data.update(terrain.edge_attributes(coordinates, float(data["length"])))
     finally:
         terrain.close()
+
+
+def water_geometry():
+    if WATER_FILE.exists():
+        return gpd.read_file(WATER_FILE)
+    water = ox.features_from_place(
+        "Tartu, Estonia",
+        tags={"natural": "water", "waterway": ["river", "canal"]},
+    )
+    if water.empty:
+        raise RuntimeError("OpenStreetMap returned no water features for Tartu.")
+    WATER_FILE.parent.mkdir(parents=True, exist_ok=True)
+    water.to_file(WATER_FILE, driver="GeoJSON")
+    return water
+
+
+def add_water_attributes(graph: nx.MultiDiGraph) -> None:
+    water = water_geometry()
+    projected = water.to_crs("EPSG:3301")
+    water_shape = unary_union(projected.geometry)
+    to_meters = Transformer.from_crs("EPSG:4326", "EPSG:3301", always_xy=True)
+    for start, end, _key, data in graph.edges(keys=True, data=True):
+        geometry = data.get("geometry")
+        coordinates = (
+            list(geometry.coords)
+            if isinstance(geometry, LineString)
+            else [
+                (graph.nodes[start]["x"], graph.nodes[start]["y"]),
+                (graph.nodes[end]["x"], graph.nodes[end]["y"]),
+            ]
+        )
+        projected_coordinates = [to_meters.transform(x, y) for x, y in coordinates]
+        data["near_water"] = water_shape.distance(LineString(projected_coordinates)) <= 250
 
 
 @app.get("/api/health")

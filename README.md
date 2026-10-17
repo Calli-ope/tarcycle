@@ -38,6 +38,12 @@ DTM files in `data/` matching `*_dtm_5m.tif` are loaded automatically. Their
 elevation is sampled along OSM edge geometry and cached as uphill grade
 attributes in the graph. The current four tiles cover central Tartu.
 
+The router also downloads and caches Tartu water features from OpenStreetMap.
+Cycleways and paths within 250 metres of mapped water receive a strong
+riverside preference.
+Major roads near mapped water are also penalised so the router will cross to a
+connected riverside cycleway instead of following a parallel arterial road.
+
 The current route is a custom shortest path, not a guaranteed globally
 optimal cycling route. It prefers dedicated cycleways, cycleway tags on roads,
 paths, and tracks, while penalising major roads and cobblestones. Better

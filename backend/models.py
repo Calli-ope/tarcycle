@@ -5,6 +5,8 @@ from dataclasses import dataclass
 class RoutingPreferences:
     cycleway_factor: float = 0.45
     path_factor: float = 0.7
+    riverside_path_factor: float = 0.2
+    riverside_road_factor: float = 6.0
     cobblestone_factor: float = 2.5
     major_road_factor: float = 2.0
     uphill_factor: float = 6.0
