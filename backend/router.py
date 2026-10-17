@@ -21,6 +21,17 @@ def _edge_attributes(data: dict[Any, Any]) -> Iterable[dict[str, Any]]:
     return (item for item in data.values() if isinstance(item, dict))
 
 
+def _distance_meters(graph: nx.MultiDiGraph, start: Any, end: Any) -> float:
+    return float(
+        ox.distance.great_circle(
+            graph.nodes[start]["y"],
+            graph.nodes[start]["x"],
+            graph.nodes[end]["y"],
+            graph.nodes[end]["x"],
+        )
+    )
+
+
 def edge_cost(
     _u: Any,
     _v: Any,
@@ -44,6 +55,8 @@ def edge_cost(
             factor *= preferences.cobblestone_factor
         if highway in {"primary", "secondary", "tertiary", "trunk"}:
             factor *= preferences.major_road_factor
+        if highway in {"motorway", "motorway_link"}:
+            factor = float("inf")
         costs.append(base_cost * factor)
     if not costs:
         raise ValueError("OSM edge has no usable attributes.")
@@ -84,11 +97,19 @@ class NetworkXRouter:
         preferences = preferences or RoutingPreferences()
         origin = ox.distance.nearest_nodes(self.graph, start_lon, start_lat)
         destination = ox.distance.nearest_nodes(self.graph, end_lon, end_lat)
-        route = nx.shortest_path(
+        minimum_factor = min(
+            preferences.cycleway_factor,
+            preferences.path_factor,
+            1.0,
+        )
+        route = nx.astar_path(
             self.graph,
             origin,
             destination,
             weight=lambda u, v, data: edge_cost(u, v, data, preferences),
+            heuristic=lambda node, target: (
+                _distance_meters(self.graph, node, target) * minimum_factor
+            ),
         )
         coordinates = []
         for start, end in zip(route, route[1:]):

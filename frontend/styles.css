@@ -46,6 +46,7 @@ label {
 }
 
 select,
+input,
 button {
   width: 100%;
   min-height: 2.75rem;
@@ -55,6 +56,21 @@ button {
   border-radius: 0.5rem;
   background: white;
   font: inherit;
+}
+
+.mode-switch {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.mode {
+  color: #1d70f7;
+  background: #eff6ff;
+}
+
+.mode.active {
+  color: white;
+  background: #1d70f7;
 }
 
 button {

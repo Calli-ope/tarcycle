@@ -1,14 +1,24 @@
+import json
 from functools import lru_cache
+from pathlib import Path
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 import networkx as nx
 import osmnx as ox
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
-from .config import GRAPH_FILE, STATIONS_FILE
 from .models import RoutingPreferences
 from .router import NetworkXRouter
 from .stations import load_stations
+
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+STATIONS_FILE = ROOT_DIR / "Rattaparklad.csv"
+GRAPH_FILE = ROOT_DIR / "cache" / "tartu_bike.graphml"
+FRONTEND_DIR = ROOT_DIR / "frontend"
 
 
 app = FastAPI(title="Tarcycle routing API", version="0.1.0")
@@ -48,23 +58,63 @@ def station_list() -> list[dict[str, int | str | float]]:
     return [station.as_dict() for station in stations()]
 
 
+@lru_cache(maxsize=128)
+def geocode(address: str) -> tuple[float, float]:
+    """Resolve one Tartu address through Nominatim."""
+
+    if not address.strip():
+        raise HTTPException(status_code=400, detail="Address cannot be empty.")
+    params = urlencode(
+        {"q": f"{address}, Tartu, Estonia", "format": "jsonv2", "limit": 1}
+    )
+    request = Request(
+        f"https://nominatim.openstreetmap.org/search?{params}",
+        headers={"User-Agent": "Tarcycle/0.1 (cycling research prototype)"},
+    )
+    try:
+        with urlopen(request, timeout=10) as response:
+            results = json.load(response)
+    except OSError as error:
+        raise HTTPException(status_code=502, detail="Address lookup failed.") from error
+    if not results:
+        raise HTTPException(status_code=404, detail=f"Address not found: {address}")
+    return float(results[0]["lat"]), float(results[0]["lon"])
+
+
 @app.get("/api/route")
 def station_route(
-    from_station: int = Query(..., alias="from"),
-    to_station: int = Query(..., alias="to"),
+    mode: str = Query("stations", pattern="^(stations|addresses)$"),
+    from_station: int | None = Query(None, alias="from"),
+    to_station: int | None = Query(None, alias="to"),
+    from_address: str | None = None,
+    to_address: str | None = None,
 ) -> dict:
-    station_by_id = {station.id: station for station in stations()}
-    start = station_by_id.get(from_station)
-    end = station_by_id.get(to_station)
-    if start is None or end is None:
-        raise HTTPException(status_code=404, detail="Unknown station id.")
+    if mode == "stations":
+        station_by_id = {station.id: station for station in stations()}
+        start = station_by_id.get(from_station)
+        end = station_by_id.get(to_station)
+        if start is None or end is None:
+            raise HTTPException(status_code=404, detail="Unknown station id.")
+        start_point = (start.latitude, start.longitude)
+        end_point = (end.latitude, end.longitude)
+    else:
+        if not from_address or not to_address:
+            raise HTTPException(
+                status_code=400,
+                detail="Both from_address and to_address are required.",
+            )
+        start_point = geocode(from_address)
+        end_point = geocode(to_address)
     try:
         return router().route_geojson(
-            start.latitude,
-            start.longitude,
-            end.latitude,
-            end.longitude,
+            start_point[0],
+            start_point[1],
+            end_point[0],
+            end_point[1],
             RoutingPreferences(),
         )
     except nx.NetworkXNoPath as error:
         raise HTTPException(status_code=422, detail="No bicycle route found.") from error
+
+
+app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")

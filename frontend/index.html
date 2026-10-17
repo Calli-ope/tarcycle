@@ -12,11 +12,23 @@
       <div id="map" aria-label="Tartu bicycle map"></div>
       <section class="controls" aria-label="Route planner">
         <h1>Tarcycle</h1>
-        <p class="subtitle">Plan a bicycle route between Tartu stations.</p>
-        <label for="from">Start station</label>
-        <select id="from"></select>
-        <label for="to">Destination station</label>
-        <select id="to"></select>
+        <p class="subtitle">Plan a bicycle route across Tartu.</p>
+        <div class="mode-switch" role="group" aria-label="Route input mode">
+          <button id="stations-mode" class="mode active" type="button">Stations</button>
+          <button id="addresses-mode" class="mode" type="button">Addresses</button>
+        </div>
+        <div id="station-inputs">
+          <label for="from">Start station</label>
+          <select id="from"></select>
+          <label for="to">Destination station</label>
+          <select id="to"></select>
+        </div>
+        <div id="address-inputs" hidden>
+          <label for="from-address">Start address</label>
+          <input id="from-address" placeholder="e.g. Raekoja plats 1" />
+          <label for="to-address">Destination address</label>
+          <input id="to-address" placeholder="e.g. Ülikooli 18" />
+        </div>
         <button id="route">Plan route</button>
         <p id="status" role="status"></p>
       </section>

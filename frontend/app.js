@@ -1,4 +1,4 @@
-const API_URL = "http://127.0.0.1:8000";
+const API_URL = "";
 const stationSource = "stations";
 const routeSource = "route";
 const map = new maplibregl.Map({
@@ -22,6 +22,15 @@ const map = new maplibregl.Map({
 const fromSelect = document.querySelector("#from");
 const toSelect = document.querySelector("#to");
 const status = document.querySelector("#status");
+let mode = "stations";
+
+function setMode(nextMode) {
+  mode = nextMode;
+  document.querySelector("#station-inputs").hidden = mode !== "stations";
+  document.querySelector("#address-inputs").hidden = mode !== "addresses";
+  document.querySelector("#stations-mode").classList.toggle("active", mode === "stations");
+  document.querySelector("#addresses-mode").classList.toggle("active", mode === "addresses");
+}
 
 function stationFeatureCollection(stations) {
   return {
@@ -73,12 +82,19 @@ async function loadStations() {
 }
 
 async function planRoute() {
-  if (fromSelect.value === toSelect.value) {
+  if (mode === "stations" && fromSelect.value === toSelect.value) {
     status.textContent = "Choose two different stations.";
     return;
   }
   status.textContent = "Calculating route. The first request may download the map...";
-  const query = new URLSearchParams({ from: fromSelect.value, to: toSelect.value });
+  const query = new URLSearchParams({ mode });
+  if (mode === "stations") {
+    query.set("from", fromSelect.value);
+    query.set("to", toSelect.value);
+  } else {
+    query.set("from_address", document.querySelector("#from-address").value);
+    query.set("to_address", document.querySelector("#to-address").value);
+  }
   try {
     const response = await fetch(`${API_URL}/api/route?${query}`);
     const body = await response.json();
@@ -114,3 +130,5 @@ map.on("load", () => {
 });
 
 document.querySelector("#route").addEventListener("click", planRoute);
+document.querySelector("#stations-mode").addEventListener("click", () => setMode("stations"));
+document.querySelector("#addresses-mode").addEventListener("click", () => setMode("addresses"));
