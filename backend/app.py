@@ -13,12 +13,14 @@ from fastapi.staticfiles import StaticFiles
 from .models import RoutingPreferences
 from .router import NetworkXRouter
 from .stations import load_stations
+from .terrain import TerrainModel
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-STATIONS_FILE = ROOT_DIR / "Rattaparklad.csv"
+STATIONS_FILE = ROOT_DIR / "data" / "Rattaparklad.csv"
 GRAPH_FILE = ROOT_DIR / "cache" / "tartu_bike.graphml"
 FRONTEND_DIR = ROOT_DIR / "frontend"
+TERRAIN_DIR = ROOT_DIR / "data"
 
 
 app = FastAPI(title="Tarcycle routing API", version="0.1.0")
@@ -45,12 +47,39 @@ def router() -> NetworkXRouter:
         ox.save_graphml(graph, GRAPH_FILE)
     if not isinstance(graph, nx.MultiDiGraph):
         raise TypeError("The cached OSM graph must be a directed multigraph.")
+    if graph.graph.get("terrain_model") != "dtm_5m_v2":
+        add_terrain_attributes(graph)
+        graph.graph["terrain_model"] = "dtm_5m_v2"
+        ox.save_graphml(graph, GRAPH_FILE)
     return NetworkXRouter(graph)
+
+
+def add_terrain_attributes(graph: nx.MultiDiGraph) -> None:
+    terrain = TerrainModel(TERRAIN_DIR)
+    if not terrain.available:
+        return
+    try:
+        for start, end, _key, data in graph.edges(keys=True, data=True):
+            geometry = data.get("geometry")
+            if geometry is None:
+                coordinates = [
+                    (graph.nodes[start]["x"], graph.nodes[start]["y"]),
+                    (graph.nodes[end]["x"], graph.nodes[end]["y"]),
+                ]
+            else:
+                coordinates = list(geometry.coords)
+            data.update(terrain.edge_attributes(coordinates, float(data["length"])))
+    finally:
+        terrain.close()
 
 
 @app.get("/api/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "backend": "networkx"}
+    return {
+        "status": "ok",
+        "backend": "networkx",
+        "terrain": "dtm_5m" if list(TERRAIN_DIR.glob("*_dtm_5m.tif")) else "none",
+    }
 
 
 @app.get("/api/stations")

@@ -57,6 +57,8 @@ def edge_cost(
             factor *= preferences.major_road_factor
         if highway in {"motorway", "motorway_link"}:
             factor = float("inf")
+        uphill_grade = float(attributes.get("average_uphill_grade", 0.0))
+        factor *= 1.0 + preferences.uphill_factor * uphill_grade
         costs.append(base_cost * factor)
     if not costs:
         raise ValueError("OSM edge has no usable attributes.")
@@ -112,8 +114,17 @@ class NetworkXRouter:
             ),
         )
         coordinates = []
+        elevation_gain = 0.0
+        maximum_grade = 0.0
+        covered_edges = 0
         for start, end in zip(route, route[1:]):
             edge = _best_edge(self.graph, start, end, preferences)
+            elevation_gain += float(edge.get("elevation_gain", 0.0))
+            maximum_grade = max(
+                maximum_grade,
+                float(edge.get("average_uphill_grade", 0.0)),
+            )
+            covered_edges += int(float(edge.get("terrain_covered", 0.0)))
             geometry = edge.get("geometry")
             if isinstance(geometry, LineString):
                 points = list(geometry.coords)
@@ -130,6 +141,12 @@ class NetworkXRouter:
             "properties": {
                 "backend": self.backend_name,
                 "node_count": len(route),
+                "elevation_gain_m": round(elevation_gain, 1),
+                "maximum_uphill_grade": round(maximum_grade, 4),
+                "terrain_coverage": round(
+                    covered_edges / max(1, len(route) - 1),
+                    3,
+                ),
             },
             "geometry": {"type": "LineString", "coordinates": coordinates},
         }

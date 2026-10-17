@@ -7,6 +7,7 @@ class RoutingPreferences:
     path_factor: float = 0.7
     cobblestone_factor: float = 2.5
     major_road_factor: float = 2.0
+    uphill_factor: float = 6.0
 
 
 @dataclass(frozen=True)
