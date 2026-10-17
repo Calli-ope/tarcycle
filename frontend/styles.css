@@ -1,0 +1,73 @@
+:root {
+  font-family: system-ui, sans-serif;
+  color: #172033;
+  background: #e9eef5;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+.map-shell,
+#map {
+  min-height: 100vh;
+}
+
+.controls {
+  position: absolute;
+  z-index: 1000;
+  top: 1.25rem;
+  left: 1.25rem;
+  width: min(22rem, calc(100vw - 2.5rem));
+  padding: 1.25rem;
+  border-radius: 1rem;
+  background: rgb(255 255 255 / 95%);
+  box-shadow: 0 0.5rem 2rem rgb(23 32 51 / 20%);
+}
+
+h1 {
+  margin: 0;
+}
+
+.subtitle {
+  margin-top: 0.25rem;
+  color: #64748b;
+}
+
+label {
+  display: block;
+  margin-top: 1rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+select,
+button {
+  width: 100%;
+  min-height: 2.75rem;
+  margin-top: 0.4rem;
+  padding: 0.5rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.5rem;
+  background: white;
+  font: inherit;
+}
+
+button {
+  border: 0;
+  color: white;
+  background: #1d70f7;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+#status {
+  min-height: 1.25rem;
+  margin-bottom: 0;
+  color: #475569;
+  font-size: 0.9rem;
+}

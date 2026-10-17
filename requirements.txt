@@ -1,0 +1,5 @@
+networkx>=3.0
+osmnx>=2.0
+fastapi>=0.100
+uvicorn[standard]>=0.20
+pyproj>=3.5

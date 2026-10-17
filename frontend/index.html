@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tarcycle</title>
+    <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="map-shell">
+      <div id="map" aria-label="Tartu bicycle map"></div>
+      <section class="controls" aria-label="Route planner">
+        <h1>Tarcycle</h1>
+        <p class="subtitle">Plan a bicycle route between Tartu stations.</p>
+        <label for="from">Start station</label>
+        <select id="from"></select>
+        <label for="to">Destination station</label>
+        <select id="to"></select>
+        <button id="route">Plan route</button>
+        <p id="status" role="status"></p>
+      </section>
+    </main>
+    <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>
