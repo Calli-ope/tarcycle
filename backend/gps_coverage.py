@@ -99,6 +99,7 @@ class CoverageSettings:
     min_candidate_cells: int = 5
     area_buffer_m: float = 500.0
     trim_ends_m: float = 50.0
+    alongside_m: float = 25.0
     min_trip_minutes: float = 2.0
 
 
@@ -565,16 +566,45 @@ def edge_usage(
     return used.sort_values("trips")
 
 
+def gap_group(alongside_share: float) -> str:
+    """How much a ridden way outside the router graph adds to it.
+
+    ``alongside``: mostly runs next to a way the router already has (typically
+    a sidewalk mapped as a footway), so it adds no new connection.
+    ``separate``: mostly away from router ways (park, riverside, courtyard,
+    shortcut), so it could give the router a connection it lacks.
+    """
+
+    if alongside_share >= 0.8:
+        return "alongside"
+    if alongside_share >= 0.5:
+        return "partly"
+    return "separate"
+
+
+def alongside_share(
+    geometries: np.ndarray, router_geometries: np.ndarray, distance_m: float
+) -> np.ndarray:
+    """Fraction of each line's length within ``distance_m`` of any router-graph way."""
+
+    corridor = shapely.union_all(shapely.buffer(router_geometries, distance_m))
+    lengths = shapely.length(geometries)
+    inside = shapely.length(shapely.intersection(geometries, corridor))
+    return np.divide(inside, lengths, out=np.zeros(len(lengths)), where=lengths > 0)
+
+
 def way_usage(
     cells: pd.DataFrame, edges: gpd.GeoDataFrame, settings: CoverageSettings
 ) -> gpd.GeoDataFrame:
     """The GPS layer for routing: one row per OSM way that riders use.
 
-    ``trips`` is the median distinct-trip count of the busy cells matched to
-    the way, ``covered_share`` the fraction of the way's length with such
-    cells. For ways outside the router graph, only cells with no router-graph
-    way within ``near_m`` count, so riders on a road do not leak onto the
-    sidewalk drawn next to it.
+    The geometry is only the ridden part of the way (the edge pieces with
+    busy cells matched to them), not the whole way. ``trips`` is the median
+    distinct-trip count of those cells, ``ridden_m`` the ridden length and
+    ``covered_share`` ridden length / way length. For ways outside the router
+    graph, only cells with no router-graph way within ``near_m`` count, so
+    riders on a road do not leak onto the sidewalk drawn next to it; those
+    ways also get ``alongside_share`` and ``gap_group``.
     """
 
     matched = cells[cells["edge"] >= 0]
@@ -582,34 +612,54 @@ def way_usage(
     way_in_graph = edges["in_bike_graph"].to_numpy(bool)[edge]
     matched = matched[way_in_graph | ~matched["in_bike_graph"].to_numpy(bool)]
     edge = matched["edge"].to_numpy()
+    way_id = edges["way_id"].to_numpy()
     stats = (
-        pd.DataFrame({"way_id": edges["way_id"].to_numpy()[edge], "trips": matched["trips"].to_numpy()})
+        pd.DataFrame({"way_id": way_id[edge], "trips": matched["trips"].to_numpy()})
         .groupby("way_id")["trips"]
-        .agg(["median", "size"])
+        .median()
     )
-    pieces = edges[edges["way_id"].isin(stats.index)]
-    ways = pieces.dissolve(by="way_id", aggfunc="first").join(stats)
+    way_length = edges.length.groupby(edges["way_id"]).sum()
+    ridden = edges.iloc[np.unique(edge)]
+    ways = ridden.dissolve(by="way_id", aggfunc="first")
     ways = ways.set_geometry(shapely.line_merge(np.asarray(ways.geometry.values)), crs=METRIC_CRS)
-    ways["length_m"] = ways.length.round()
-    ways["trips"] = ways["median"].astype("int64")
-    ways["covered_share"] = np.minimum(
-        1.0, ways["size"] * settings.cell_size_m / np.maximum(ways["length_m"], 1.0)
-    ).round(2)
-    return ways.drop(columns=["median", "size"]).reset_index().sort_values("trips")
+    ways["trips"] = stats.reindex(ways.index).astype("int64")
+    ways["ridden_m"] = ways.length.round()
+    ways["length_m"] = way_length.reindex(ways.index).round()
+    ways["covered_share"] = (ways["ridden_m"] / np.maximum(ways["length_m"], 1.0)).clip(upper=1.0).round(2)
+    missing = ~ways["in_bike_graph"].astype(bool).to_numpy()
+    share = np.full(len(ways), np.nan)
+    if missing.any():
+        router = edges.geometry.values[edges["in_bike_graph"].to_numpy(bool)]
+        share[missing] = alongside_share(
+            np.asarray(ways.geometry.values)[missing], np.asarray(router), settings.alongside_m
+        )
+    ways["alongside_share"] = np.round(share, 2)
+    ways["gap_group"] = [None if np.isnan(value) else gap_group(value) for value in share]
+    return ways.reset_index().sort_values("trips")
 
 
 def summarise_ways(ways: gpd.GeoDataFrame) -> dict[str, Any]:
     """Headline numbers for ridden ways the router graph does not contain."""
 
-    missing = ways[~ways["in_bike_graph"].astype(bool)]
+    missing = ways[ways["gap_group"].notna()]
+    trip_metres = missing["ridden_m"] * missing["trips"]
+    groups = {}
+    for group in ("separate", "partly", "alongside"):
+        in_group = missing["gap_group"] == group
+        groups[group] = {
+            "ways": int(in_group.sum()),
+            "ridden_km": round(float(missing.loc[in_group, "ridden_m"].sum()) / 1000, 1),
+            "share_of_gap_trip_km": round(float(trip_metres[in_group].sum() / max(trip_metres.sum(), 1)), 3),
+        }
     return {
         "ridden_ways": len(ways),
         "ridden_ways_missing_from_router_graph": len(missing),
-        "missing_ridden_length_km": round(float((missing["length_m"] * missing["covered_share"]).sum()) / 1000, 1),
+        "missing_ridden_length_km": round(float(missing["ridden_m"].sum()) / 1000, 1),
         "missing_by_highway_km": (
-            (missing["length_m"] * missing["covered_share"]).groupby(missing["highway"]).sum().div(1000).round(1)
+            missing["ridden_m"].groupby(missing["highway"]).sum().div(1000).round(1)
             .sort_values(ascending=False).head(8).to_dict()
         ),
+        "gap_groups": groups,
     }
 
 
@@ -618,6 +668,21 @@ def summarise_ways(ways: gpd.GeoDataFrame) -> dict[str, Any]:
 
 def _write_geojson(frame: gpd.GeoDataFrame, path: Path) -> None:
     frame.to_crs("EPSG:4326").to_file(path, driver="GeoJSON", COORDINATE_PRECISION=6)
+
+
+def write_routing_layers(
+    busy: pd.DataFrame,
+    edges: gpd.GeoDataFrame,
+    settings: CoverageSettings,
+    output_dir: Path,
+) -> dict[str, Any]:
+    """Write ``gps_ways.geojson`` and ``osm_cycleways.geojson``; return their summary."""
+
+    ways = way_usage(busy, edges, settings)
+    _write_geojson(ways, output_dir / "gps_ways.geojson")
+    cycleways = edges[edges["edge_class"] == "cycle_infra"][["way_id", "highway", "name", "geometry"]]
+    _write_geojson(cycleways, output_dir / "osm_cycleways.geojson")
+    return summarise_ways(ways)
 
 
 def build(
@@ -647,8 +712,6 @@ def build(
     candidates = find_candidates(busy, settings)
     summary["exported_cells"] = len(busy)
     summary["candidates"] = candidates["cell_class"].value_counts().to_dict()
-    ways = way_usage(busy, edges, settings)
-    summary["gps_layer"] = summarise_ways(ways)
     summary["trips_filtered_by_routes_file"] = routes_file is not None
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -661,8 +724,31 @@ def build(
         output_dir / "cells.geojson",
     )
     _write_geojson(edge_usage(busy, edges), output_dir / "edges.geojson")
-    _write_geojson(ways, output_dir / "gps_ways.geojson")
     _write_geojson(candidates, output_dir / "candidates.geojson")
+    summary["gps_layer"] = write_routing_layers(busy, edges, settings, output_dir)
+    (output_dir / "summary.json").write_text(json.dumps(summary, indent=2))
+    return summary
+
+
+def rebuild_from_cache(output_dir: Path, settings: CoverageSettings) -> dict[str, Any]:
+    """Recompute the routing layers from saved outputs, without the raw GPS data.
+
+    ``cells.geojson`` holds every cell that passed the privacy filter, which
+    is all :func:`way_usage` needs; the summary's other numbers are kept.
+    """
+
+    _area, edges = load_osm_reference(output_dir, settings)
+    points = gpd.read_file(output_dir / "cells.geojson").to_crs(METRIC_CRS)
+    cells = pd.DataFrame(
+        {
+            "cell": cell_ids(points.geometry.x.to_numpy(), points.geometry.y.to_numpy(), settings.cell_size_m),
+            "trips": points["trips"].to_numpy(),
+        }
+    )
+    cells = compare_with_osm(cells, edges, settings)
+    summary = json.loads((output_dir / "summary.json").read_text())
+    summary["gps_layer"] = write_routing_layers(cells, edges, settings, output_dir)
+    summary["settings"] = asdict(settings)
     (output_dir / "summary.json").write_text(json.dumps(summary, indent=2))
     return summary
 
@@ -673,13 +759,22 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--routes", type=Path, help="routes_2025.csv, to drop aborted rentals")
     parser.add_argument("--refresh-osm", action="store_true", help="re-download OSM ways")
+    parser.add_argument(
+        "--from-cache",
+        action="store_true",
+        help="only rebuild the routing layers from saved outputs (no raw GPS data needed)",
+    )
     parser.add_argument("--near", type=float, default=CoverageSettings.near_m, help="metres from a way that still count as on it")
     parser.add_argument("--min-trips", type=int, default=CoverageSettings.min_trips)
     parser.add_argument("--min-users", type=int, default=CoverageSettings.min_users)
     args = parser.parse_args()
     settings = CoverageSettings(near_m=args.near, min_trips=args.min_trips, min_users=args.min_users)
-    summary = build(args.locations, args.out, settings, args.refresh_osm, args.routes)
-    print(json.dumps(summary["share_of_ridden_distance"], indent=2))
+    if args.from_cache:
+        summary = rebuild_from_cache(args.out, settings)
+        print(json.dumps(summary["gps_layer"]["gap_groups"], indent=2))
+    else:
+        summary = build(args.locations, args.out, settings, args.refresh_osm, args.routes)
+        print(json.dumps(summary["share_of_ridden_distance"], indent=2))
     print(f"Wrote results to {args.out}")
 
 

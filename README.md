@@ -94,12 +94,24 @@ outputs are aggregated and do not reveal individual trips. Outputs:
 
 ### GPS layer for routing
 
-`cache/gps_coverage/gps_ways.geojson` has one row per OSM way that riders use:
-`way_id` (OSM way id), `highway`, `name`, `trips` (median Smart Bike trips in
-2025), `covered_share` (fraction of the way ridden), `length_m` and
-`in_bike_graph`. `in_bike_graph=false` means the router's osmnx `bike` graph
-does not contain the way at all, mostly `highway=footway`. These show in
-green on the map's "GPS layer for routing" view.
+`cache/gps_coverage/gps_ways.geojson` has one row per OSM way that riders use,
+drawn as its ridden part only: `way_id` (OSM way id), `highway`, `name`,
+`trips` (median Smart Bike trips in 2025), `ridden_m`, `length_m`,
+`covered_share` and `in_bike_graph`. `in_bike_graph=false` means the router's
+osmnx `bike` graph does not contain the way at all (mostly `highway=footway`).
+Those "gaps" also get `alongside_share` (fraction within 25 m of a way the
+router has) and `gap_group`:
+
+| `gap_group` | Meaning | Value for routing |
+|---|---|---|
+| `separate` | < 50% alongside: park, riverside, courtyard, shortcut | a connection the router lacks |
+| `partly` | 50–80% alongside | mixed |
+| `alongside` | ≥ 80% alongside, mostly sidewalks next to roads | none; the router can use the road |
+
+The map shows three independently switchable layers: OSM cycle paths
+(`osm_cycleways.geojson`), where riders go (all ridden ways), and the three gap
+groups. These layers can be rebuilt from the saved outputs without the raw GPS
+data: `python -m backend.gps_coverage --from-cache`.
 
 The layer does not change routing. To use it in the router, join it by OSM way
 id with `backend/gps_layer.py`:

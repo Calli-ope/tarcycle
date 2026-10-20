@@ -179,14 +179,27 @@ button {
   margin: 0;
 }
 
-.views {
-  flex-wrap: wrap;
-  margin-top: 1rem;
+.layer-toggle {
+  display: grid;
+  grid-template-columns: auto 0.75rem 1fr auto;
+  gap: 0.5rem;
+  align-items: center;
+  margin-top: 0.35rem;
+  font-size: 0.85rem;
+  font-weight: 400;
+  cursor: pointer;
 }
 
-.views .mode {
-  flex: 1 1 8rem;
-  margin-top: 0;
+.layer-toggle input {
+  width: auto;
+  min-height: auto;
+  margin: 0;
+}
+
+.swatch.dashed {
+  height: 0;
+  border-top: 2px dashed #0b0b0b;
+  border-radius: 0;
 }
 
 .older {

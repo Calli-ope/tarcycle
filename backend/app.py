@@ -33,6 +33,7 @@ COVERAGE_FILES = {
     "cells": "cells.geojson",
     "edges": "edges.geojson",
     "ways": "gps_ways.geojson",
+    "cycleways": "osm_cycleways.geojson",
     "candidates": "candidates.geojson",
     "summary": "summary.json",
 }

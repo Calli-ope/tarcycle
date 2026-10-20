@@ -15,37 +15,58 @@
         <h1>Riders vs OSM</h1>
         <p class="subtitle">Where Smart Bike riders go in 2025, compared with OpenStreetMap and the router's graph.</p>
 
-        <div class="mode-switch views" role="group" aria-label="Map view">
-          <button id="view-ways" class="mode active" type="button">GPS layer for routing</button>
-          <button id="view-cells" class="mode" type="button">Where people ride</button>
-          <button id="view-edges" class="mode" type="button">Use of OSM ways</button>
-        </div>
+        <h2>1 · Cycle paths according to OSM</h2>
+        <label class="layer-toggle">
+          <input type="checkbox" data-layers="osm-cycleways" />
+          <span class="swatch dashed"></span><span>OSM cycle infrastructure</span><span class="value" id="cycleways-km"></span>
+        </label>
 
-        <div id="ways-legend">
-          <h2>Ways riders use</h2>
-          <ul class="legend">
-            <li><span class="swatch" style="background: #1baf7a"></span><span>Ridden, missing from router graph</span><span class="value" id="missing-km"></span></li>
-          </ul>
-        </div>
-        <div id="ramp-legend" class="ramp-legend">
-          <p id="ramp-label" class="ramp-title"></p>
+        <h2>2 · Where riders actually go (GPS)</h2>
+        <label class="layer-toggle">
+          <input type="checkbox" data-layers="gps-ways" checked />
+          <span class="swatch" style="background: #2a78d6"></span><span>All ridden ways: cycleways, roads, footways</span><span class="value" id="ridden-count"></span>
+        </label>
+        <div class="ramp-legend">
+          <p class="ramp-title">Smart Bike trips in 2025 per way</p>
           <div class="ramp"></div>
-          <div class="ramp-labels"><span id="ramp-min"></span><span id="ramp-max"></span></div>
+          <div class="ramp-labels"><span>10</span><span id="ramp-max"></span></div>
         </div>
 
-        <div id="cells-legend" hidden>
-          <h2>Share of ridden distance</h2>
-          <div id="share-bar" class="share-bar" role="img"></div>
-          <ul id="class-legend" class="legend"></ul>
-        </div>
+        <h2>3 · Gaps: ridden ways the router can't use</h2>
+        <label class="layer-toggle">
+          <input type="checkbox" data-layers="gap-separate" data-group="separate" checked />
+          <span class="swatch" style="background: #eb6834"></span><span>Separate paths (park, riverside, shortcut)</span><span class="value" id="gap-separate"></span>
+        </label>
+        <label class="layer-toggle">
+          <input type="checkbox" data-layers="gap-partly" data-group="partly" checked />
+          <span class="swatch" style="background: #1baf7a"></span><span>Partly alongside a router way</span><span class="value" id="gap-partly"></span>
+        </label>
+        <label class="layer-toggle">
+          <input type="checkbox" data-layers="gap-alongside" data-group="alongside" checked />
+          <span class="swatch" style="background: #898781"></span><span>Alongside a router way (sidewalks)</span><span class="value" id="gap-alongside"></span>
+        </label>
 
-        <h2>Ridden ways missing from the router graph</h2>
-        <ol id="missing-list" class="candidate-list"></ol>
+        <h2>Busiest gaps shown</h2>
+        <ol id="gap-list" class="candidate-list"></ol>
 
         <details class="older">
-          <summary>Candidate zones (first analysis)</summary>
-          <label class="checkbox"><input id="show-candidates" type="checkbox" /> Show on map</label>
-          <ol id="candidate-list" class="candidate-list"></ol>
+          <summary>First analysis (for comparison)</summary>
+          <label class="layer-toggle">
+            <input type="checkbox" data-layers="edges" />
+            <span class="swatch" style="background: #1c5cab"></span><span>Use of OSM ways, per edge</span><span></span>
+          </label>
+          <label class="layer-toggle">
+            <input type="checkbox" data-layers="cells" id="toggle-cells" />
+            <span class="swatch" style="background: #898781"></span><span>Grid cells by class</span><span></span>
+          </label>
+          <div id="cells-legend" hidden>
+            <div id="share-bar" class="share-bar" role="img"></div>
+            <ul id="class-legend" class="legend"></ul>
+          </div>
+          <label class="layer-toggle">
+            <input type="checkbox" data-layers="candidates-fill,candidates-line" />
+            <span class="swatch" style="background: #eb6834"></span><span>Candidate zones</span><span></span>
+          </label>
         </details>
         <p id="status" role="status"></p>
       </section>

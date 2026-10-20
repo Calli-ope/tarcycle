@@ -1,14 +1,19 @@
 const API_URL = "";
-// Grey = already fine; the three gap classes use a colour-blind-validated set.
+// Grid-cell classes from the first analysis.
 const CLASSES = {
   cycle_infra: { label: "On cycle infrastructure", color: "#898781" },
   road_no_infra: { label: "Road without cycle infra", color: "#2a78d6" },
   osm_not_bikeable: { label: "OSM way closed to bikes", color: "#1baf7a" },
   no_osm_way: { label: "No OSM way at all", color: "#eb6834" },
 };
-const MISSING_COLOR = "#1baf7a";
+// Gaps in the router graph; orange/aqua are a colour-blind-validated pair,
+// grey marks the low-value group (sidewalks next to roads the router has).
+const GAPS = {
+  separate: { label: "Separate path", color: "#eb6834", extraWidth: 2.5 },
+  partly: { label: "Partly alongside a router way", color: "#1baf7a", extraWidth: 1.5 },
+  alongside: { label: "Alongside a router way", color: "#898781", extraWidth: 1 },
+};
 const RAMP = ["#86b6ef", "#5598e7", "#2a78d6", "#1c5cab", "#104281"];
-const TRIPS_LABEL = "Smart Bike trips in 2025 per way";
 const classColor = [
   "match",
   ["get", "cell_class"],
@@ -43,12 +48,8 @@ const map = new maplibregl.Map({
 });
 const statusText = document.querySelector("#status");
 const popup = new maplibregl.Popup({ closeButton: false, closeOnClick: false });
-const VIEWS = {
-  ways: ["ways-graph", "ways-missing"],
-  cells: ["cells"],
-  edges: ["edges"],
-};
-const rampMax = {};
+const toggles = [...document.querySelectorAll("input[data-layers]")];
+let gapFeatures = [];
 
 async function getJson(layer) {
   const response = await fetch(`${API_URL}/api/coverage/${layer}`);
@@ -61,7 +62,7 @@ function percent(value) {
   return `${(value * 100).toFixed(value < 0.1 ? 1 : 0)}%`;
 }
 
-function renderSummary(summary) {
+function renderSummary(summary, cycleways, ways) {
   const bar = document.querySelector("#share-bar");
   const legend = document.querySelector("#class-legend");
   const shares = summary.share_of_ridden_distance;
@@ -83,10 +84,29 @@ function renderSummary(summary) {
       <span class="value">${percent(shares[name])} · ${Math.round(summary.ridden_km_approx[name]).toLocaleString()} km</span>`;
     legend.append(item);
   }
-  if (summary.gps_layer) {
-    document.querySelector("#missing-km").textContent =
-      `${summary.gps_layer.missing_ridden_length_km.toLocaleString()} km`;
+  const groups = summary.gps_layer.gap_groups;
+  for (const name of Object.keys(GAPS)) {
+    document.querySelector(`#gap-${name}`).textContent =
+      `${groups[name].ridden_km} km · ${percent(groups[name].share_of_gap_trip_km)}`;
   }
+  const cyclewayKm = cycleways.features.reduce((sum, feature) => sum + lineLength(feature.geometry), 0);
+  document.querySelector("#cycleways-km").textContent = `${Math.round(cyclewayKm)} km`;
+  document.querySelector("#ridden-count").textContent = `${ways.features.length.toLocaleString()} ways`;
+}
+
+// Rough length in km of a (Multi)LineString in lon/lat; good enough for a legend.
+function lineLength(geometry) {
+  const lines = geometry.type === "LineString" ? [geometry.coordinates] : geometry.coordinates;
+  let km = 0;
+  for (const line of lines) {
+    for (let index = 1; index < line.length; index += 1) {
+      const [x1, y1] = line[index - 1];
+      const [x2, y2] = line[index];
+      const dx = (x2 - x1) * 111.32 * Math.cos(((y1 + y2) / 2) * (Math.PI / 180));
+      km += Math.hypot(dx, (y2 - y1) * 110.57);
+    }
+  }
+  return km;
 }
 
 function boundsOf(geometry) {
@@ -103,9 +123,11 @@ function wayName(properties) {
 }
 
 function wayText(properties) {
-  const status = properties.in_bike_graph ? "in router graph" : "missing from router graph";
-  return `${wayName(properties)} (${properties.highway}) · ${status}<br />
-    ${properties.trips} trips · ${Math.round(properties.covered_share * 100)}% of ${properties.length_m} m ridden`;
+  const status = properties.gap_group
+    ? `<strong>${GAPS[properties.gap_group].label}</strong>, not in router graph (${Math.round(properties.alongside_share * 100)}% within 25 m of a router way)`
+    : "in router graph";
+  return `${wayName(properties)} (${properties.highway})<br />${status}<br />
+    ${properties.trips} trips · ${properties.ridden_m} of ${properties.length_m} m ridden`;
 }
 
 function candidateText(properties) {
@@ -113,56 +135,29 @@ function candidateText(properties) {
     ${properties.length_m} m long · median ${properties.median_trips} trips (max ${properties.max_trips})`;
 }
 
-function addListItem(list, feature, swatchColor, label, value, text) {
-  const item = document.createElement("li");
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "candidate";
-  button.innerHTML = `<span class="swatch" style="background:${swatchColor}"></span>
-    <span>${label}</span><span class="value">${value}</span>`;
-  button.addEventListener("click", () => {
-    const bounds = boundsOf(feature.geometry);
-    map.fitBounds(bounds, { padding: 120, maxZoom: 17 });
-    popup.setLngLat(bounds.getCenter()).setHTML(text).addTo(map);
-  });
-  item.append(button);
-  list.append(item);
-}
-
-function renderMissingWays(ways) {
-  const list = document.querySelector("#missing-list");
-  const ridden = (feature) =>
-    feature.properties.trips * feature.properties.length_m * feature.properties.covered_share;
-  const missing = ways.features
-    .filter((feature) => !feature.properties.in_bike_graph)
-    .sort((a, b) => ridden(b) - ridden(a))
+function renderGapList() {
+  const shown = new Set(toggles.filter((input) => input.checked && input.dataset.group).map((input) => input.dataset.group));
+  const list = document.querySelector("#gap-list");
+  list.replaceChildren();
+  const top = gapFeatures
+    .filter((feature) => shown.has(feature.properties.gap_group))
     .slice(0, 15);
-  if (!missing.length) list.innerHTML = "<li>No ridden ways outside the router graph.</li>";
-  for (const feature of missing) {
+  if (!top.length) list.innerHTML = "<li>Switch on a gap group above.</li>";
+  for (const feature of top) {
     const { properties } = feature;
-    addListItem(
-      list,
-      feature,
-      MISSING_COLOR,
-      wayName(properties),
-      `${Math.round(properties.length_m * properties.covered_share)} m · ${properties.trips} trips`,
-      wayText(properties),
-    );
-  }
-}
-
-function renderCandidates(candidates) {
-  const list = document.querySelector("#candidate-list");
-  for (const feature of candidates.features.slice(0, 15)) {
-    const { properties } = feature;
-    addListItem(
-      list,
-      feature,
-      CLASSES[properties.cell_class].color,
-      CLASSES[properties.cell_class].label,
-      `${properties.length_m} m · ${properties.median_trips} trips`,
-      candidateText(properties),
-    );
+    const item = document.createElement("li");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "candidate";
+    button.innerHTML = `<span class="swatch" style="background:${GAPS[properties.gap_group].color}"></span>
+      <span>${wayName(properties)}</span><span class="value">${properties.ridden_m} m · ${properties.trips} trips</span>`;
+    button.addEventListener("click", () => {
+      const bounds = boundsOf(feature.geometry);
+      map.fitBounds(bounds, { padding: 120, maxZoom: 17 });
+      popup.setLngLat(bounds.getCenter()).setHTML(wayText(properties)).addTo(map);
+    });
+    item.append(button);
+    list.append(item);
   }
 }
 
@@ -182,39 +177,9 @@ function tripScale(features) {
   return { maxTrips, color, width };
 }
 
-function addLayers(cells, edges, ways, candidates) {
-  const edgeScale = tripScale(edges.features);
-  rampMax.edges = edgeScale.maxTrips;
-  map.addSource("edges", { type: "geojson", data: edges });
-  map.addLayer({
-    id: "edges",
-    type: "line",
-    source: "edges",
-    layout: { visibility: "none", "line-cap": "round" },
-    paint: { "line-color": edgeScale.color, "line-width": edgeScale.width(0) },
-  });
-
-  const wayScale = tripScale(ways.features);
-  rampMax.ways = wayScale.maxTrips;
-  map.addSource("ways", { type: "geojson", data: ways });
-  map.addLayer({
-    id: "ways-graph",
-    type: "line",
-    source: "ways",
-    filter: ["==", ["get", "in_bike_graph"], true],
-    layout: { "line-cap": "round" },
-    paint: { "line-color": wayScale.color, "line-width": wayScale.width(0) },
-  });
-  // Drawn last and thicker so the gaps in the router graph stand out.
-  map.addLayer({
-    id: "ways-missing",
-    type: "line",
-    source: "ways",
-    filter: ["==", ["get", "in_bike_graph"], false],
-    layout: { "line-cap": "round" },
-    paint: { "line-color": MISSING_COLOR, "line-width": wayScale.width(2) },
-  });
-
+function addLayers({ cells, edges, ways, cycleways, candidates }) {
+  const hidden = { visibility: "none", "line-cap": "round" };
+  // First-analysis layers at the bottom.
   map.addSource("cells", { type: "geojson", data: cells });
   map.addLayer({
     id: "cells",
@@ -227,48 +192,90 @@ function addLayers(cells, edges, ways, candidates) {
       "circle-opacity": ["interpolate", ["linear"], ["log10", ["get", "trips"]], 1, 0.45, 3, 0.95],
     },
   });
+  const edgeScale = tripScale(edges.features);
+  map.addSource("edges", { type: "geojson", data: edges });
+  map.addLayer({
+    id: "edges",
+    type: "line",
+    source: "edges",
+    layout: hidden,
+    paint: { "line-color": edgeScale.color, "line-width": edgeScale.width(0) },
+  });
+
+  // 2 · Where riders go.
+  const wayScale = tripScale(ways.features);
+  document.querySelector("#ramp-max").textContent = wayScale.maxTrips.toLocaleString();
+  map.addSource("ways", { type: "geojson", data: ways });
+  map.addLayer({
+    id: "gps-ways",
+    type: "line",
+    source: "ways",
+    layout: hidden,
+    paint: { "line-color": wayScale.color, "line-width": wayScale.width(0) },
+  });
+
+  // 1 · OSM cycle paths, a dashed reference line above the GPS colours.
+  map.addSource("cycleways", { type: "geojson", data: cycleways });
+  map.addLayer({
+    id: "osm-cycleways",
+    type: "line",
+    source: "cycleways",
+    layout: { visibility: "none" },
+    paint: { "line-color": "#0b0b0b", "line-width": 1.5, "line-dasharray": [2, 1.5], "line-opacity": 0.85 },
+  });
+
+  // 3 · Gaps, drawn on top; least valuable group lowest.
+  for (const name of ["alongside", "partly", "separate"]) {
+    map.addLayer({
+      id: `gap-${name}`,
+      type: "line",
+      source: "ways",
+      filter: ["==", ["get", "gap_group"], name],
+      layout: hidden,
+      paint: { "line-color": GAPS[name].color, "line-width": wayScale.width(GAPS[name].extraWidth) },
+    });
+  }
 
   map.addSource("candidates", { type: "geojson", data: candidates });
-  for (const [id, type, paint] of [
-    ["candidates-fill", "fill", { "fill-color": classColor, "fill-opacity": 0.2 }],
-    ["candidates-line", "line", { "line-color": classColor, "line-width": 2 }],
-  ]) {
-    map.addLayer({ id, type, source: "candidates", layout: { visibility: "none" }, paint });
-  }
+  map.addLayer({
+    id: "candidates-fill",
+    type: "fill",
+    source: "candidates",
+    layout: { visibility: "none" },
+    paint: { "fill-color": classColor, "fill-opacity": 0.2 },
+  });
+  map.addLayer({
+    id: "candidates-line",
+    type: "line",
+    source: "candidates",
+    layout: { visibility: "none" },
+    paint: { "line-color": classColor, "line-width": 2 },
+  });
 }
 
-function setView(view) {
-  for (const [name, layers] of Object.entries(VIEWS)) {
-    for (const layer of layers) {
-      map.setLayoutProperty(layer, "visibility", name === view ? "visible" : "none");
-    }
-    document.querySelector(`#view-${name}`).classList.toggle("active", name === view);
+function applyToggle(input) {
+  for (const layer of input.dataset.layers.split(",")) {
+    map.setLayoutProperty(layer, "visibility", input.checked ? "visible" : "none");
   }
-  document.querySelector("#ways-legend").hidden = view !== "ways";
-  document.querySelector("#cells-legend").hidden = view !== "cells";
-  document.querySelector("#ramp-legend").hidden = view === "cells";
-  if (view !== "cells") {
-    document.querySelector("#ramp-min").textContent = "10";
-    document.querySelector("#ramp-label").textContent =
-      view === "ways" ? `${TRIPS_LABEL} (router graph)` : TRIPS_LABEL;
-    document.querySelector("#ramp-max").textContent = rampMax[view].toLocaleString();
-  }
+  if (input.id === "toggle-cells") document.querySelector("#cells-legend").hidden = !input.checked;
+  if (input.dataset.group) renderGapList();
 }
 
 function hoverText(feature) {
   const { properties } = feature;
-  if (feature.layer.id.startsWith("ways")) return wayText(properties);
-  if (feature.layer.id === "edges") {
+  const id = feature.layer.id;
+  if (id === "gps-ways" || id.startsWith("gap-")) return wayText(properties);
+  if (id === "osm-cycleways") return `${wayName(properties)}<br />OSM cycle infrastructure`;
+  if (id === "edges") {
     return `${wayName(properties)}<br />${properties.trips} trips · ${properties.edge_class.replace("_", " ")}`;
   }
-  if (feature.layer.id === "cells") {
-    return `${CLASSES[properties.cell_class].label}<br />${properties.trips} trips`;
-  }
+  if (id === "cells") return `${CLASSES[properties.cell_class].label}<br />${properties.trips} trips`;
   return candidateText(properties);
 }
 
 function addHover() {
-  for (const layer of ["candidates-fill", "cells", "edges", "ways-graph", "ways-missing"]) {
+  const layers = ["candidates-fill", "cells", "edges", "gps-ways", "osm-cycleways", "gap-alongside", "gap-partly", "gap-separate"];
+  for (const layer of layers) {
     map.on("mousemove", layer, (event) => {
       map.getCanvas().style.cursor = "pointer";
       popup.setLngLat(event.lngLat).setHTML(hoverText(event.features[0])).addTo(map);
@@ -283,26 +290,25 @@ function addHover() {
 map.on("load", async () => {
   statusText.textContent = "Loading coverage layers...";
   try {
-    const [summary, cells, edges, ways, candidates] = await Promise.all(
-      ["summary", "cells", "edges", "ways", "candidates"].map(getJson),
+    const names = ["summary", "cells", "edges", "ways", "cycleways", "candidates"];
+    const loaded = Object.fromEntries(
+      (await Promise.all(names.map(getJson))).map((body, index) => [names[index], body]),
     );
-    renderSummary(summary);
-    addLayers(cells, edges, ways, candidates);
-    renderMissingWays(ways);
-    renderCandidates(candidates);
+    renderSummary(loaded.summary, loaded.cycleways, loaded.ways);
+    addLayers(loaded);
+    const busiest = (feature) => feature.properties.trips * feature.properties.ridden_m;
+    gapFeatures = loaded.ways.features
+      .filter((feature) => feature.properties.gap_group)
+      .sort((a, b) => busiest(b) - busiest(a));
+    toggles.forEach(applyToggle);
     addHover();
-    setView("ways");
+    const { summary } = loaded;
     statusText.textContent = `${summary.exported_cells.toLocaleString()} grid cells with ≥ ${summary.settings.min_trips} trips and ≥ ${summary.settings.min_users} riders.`;
   } catch (error) {
     statusText.textContent = error.message;
   }
 });
 
-for (const view of Object.keys(VIEWS)) {
-  document.querySelector(`#view-${view}`).addEventListener("click", () => setView(view));
+for (const input of toggles) {
+  input.addEventListener("change", () => applyToggle(input));
 }
-document.querySelector("#show-candidates").addEventListener("change", (event) => {
-  const visibility = event.target.checked ? "visible" : "none";
-  map.setLayoutProperty("candidates-fill", "visibility", visibility);
-  map.setLayoutProperty("candidates-line", "visibility", visibility);
-});

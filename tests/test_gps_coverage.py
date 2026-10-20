@@ -18,7 +18,10 @@ from backend.gps_coverage import (
     classify_cells,
     classify_way,
     densify_tracks,
+    alongside_share,
+    gap_group,
     in_osmnx_bike_network,
+    rebuild_from_cache,
     valid_route_codes,
     read_location_chunks,
 )
@@ -255,8 +258,12 @@ def test_gps_layer_marks_ridden_ways_missing_from_router_graph(tmp_path):
         [
             {"way_id": 101, "highway": "cycleway", "name": "Ride", "edge_class": "cycle_infra", "in_bike_graph": True,
              "geometry": LineString([(ORIGIN_X - 50, ORIGIN_Y), (ORIGIN_X + 450, ORIGIN_Y)])},
-            {"way_id": 202, "highway": "footway", "name": "", "edge_class": "not_bikeable", "in_bike_graph": False,
-             "geometry": LineString([(ORIGIN_X - 50, ORIGIN_Y + 100), (ORIGIN_X + 450, ORIGIN_Y + 100)])},
+            # One footway in four pieces (unsimplified OSM); the last piece is never ridden.
+            *[
+                {"way_id": 202, "highway": "footway", "name": "", "edge_class": "not_bikeable", "in_bike_graph": False,
+                 "geometry": LineString([(ORIGIN_X + a, ORIGIN_Y + 100), (ORIGIN_X + b, ORIGIN_Y + 100)])}
+                for a, b in [(-50, 100), (100, 250), (250, 450), (450, 1000)]
+            ],
         ],
     )
 
@@ -269,10 +276,24 @@ def test_gps_layer_marks_ridden_ways_missing_from_router_graph(tmp_path):
     assert set(ways) == {101, 202}
     assert ways[202]["in_bike_graph"] is False
     assert ways[202]["trips"] == 12  # 14 riders minus the two aborted rentals
-    assert 0.5 < ways[202]["covered_share"] <= 1.0
+    assert ways[202]["length_m"] == 1050
+    assert ways[202]["ridden_m"] == 500  # only the three ridden pieces are drawn
+    assert ways[202]["gap_group"] == "separate"  # 100 m from the cycleway
+    assert ways[101]["gap_group"] is None
     assert summary["gps_layer"]["ridden_ways_missing_from_router_graph"] == 1
     assert summary["router_graph_share_of_ridden_distance"]["other_osm_way"] == pytest.approx(0.5, abs=0.1)
     assert (out / "edges.geojson").exists()  # kept for comparison with the first run
+
+    assert summary["gps_layer"]["gap_groups"]["separate"]["ways"] == 1
+    assert (out / "osm_cycleways.geojson").exists()
+
+    (out / "gps_ways.geojson").unlink()
+    rebuild_from_cache(out, SETTINGS)
+    rebuilt = {
+        feature["properties"]["way_id"]: feature["properties"]
+        for feature in json.loads((out / "gps_ways.geojson").read_text())["features"]
+    }
+    assert rebuilt == ways
 
     gps_ways = load_gps_ways(out / "gps_ways.geojson")
     assert edge_gps_trips({"osmid": [999, 202]}, gps_ways) == 12
@@ -285,3 +306,18 @@ def test_gps_layer_marks_ridden_ways_missing_from_router_graph(tmp_path):
 )
 def test_way_ids_accepts_every_osmnx_osmid_form(osmid, expected):
     assert way_ids(osmid) == expected
+
+
+@pytest.mark.parametrize(("share", "group"), [(0.95, "alongside"), (0.8, "alongside"), (0.6, "partly"), (0.2, "separate")])
+def test_gap_group(share, group):
+    assert gap_group(share) == group
+
+
+def test_alongside_share_measures_parallel_sidewalks():
+    road = np.array([LineString([(0, 0), (400, 0)])])
+    sidewalk = LineString([(0, 10), (400, 10)])
+    park_path = LineString([(0, 100), (400, 300)])
+    half = LineString([(200, 10), (600, 10)])
+    shares = alongside_share(np.array([sidewalk, park_path, half]), road, 25.0)
+    # The corridor reaches sqrt(25² - 10²) ≈ 22.9 m past the road's end: (200 + 22.9) / 400.
+    np.testing.assert_allclose(shares, [1.0, 0.0, 222.9 / 400], atol=0.01)
