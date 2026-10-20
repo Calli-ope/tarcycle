@@ -72,7 +72,7 @@ function renderSummary(summary) {
     const item = document.createElement("li");
     item.innerHTML = `<span class="swatch" style="background:${color}"></span>
       <span>${label}</span>
-      <span class="value">${percent(shares[name])} · ${summary.ridden_km_approx[name].toLocaleString()} km</span>`;
+      <span class="value">${percent(shares[name])} · ${Math.round(summary.ridden_km_approx[name]).toLocaleString()} km</span>`;
     legend.append(item);
   }
 }

@@ -225,21 +225,49 @@ def cell_centres(ids: np.ndarray, cell_size_m: float) -> tuple[np.ndarray, np.nd
 
 
 def read_locations(path: Path) -> pd.DataFrame:
-    """One monthly ``locations_*.csv`` as route, user, lon, lat and epoch seconds."""
+    """A whole ``locations_*.csv`` file; see :func:`read_location_chunks`."""
 
-    frame = pd.read_csv(
-        path,
-        usecols=["RouteCode", "UserId", "Latitude", "Longitude", "CoordinatesDate", "CoordinatesTime"],
-        dtype={"RouteCode": "int64", "UserId": "string", "CoordinatesDate": "string", "CoordinatesTime": "string"},
-    )
+    return pd.concat(read_location_chunks(path, chunk_rows=None), ignore_index=True)
+
+
+def _parse_locations(frame: pd.DataFrame) -> pd.DataFrame:
     timestamp = pd.to_datetime(
         frame["CoordinatesDate"] + " " + frame["CoordinatesTime"].str.slice(0, 8),
         format="%Y-%m-%d %H:%M:%S",
         errors="coerce",
     )
-    frame["seconds"] = (timestamp - pd.Timestamp("1970-01-01")) / pd.Timedelta(seconds=1)
+    frame = frame.assign(seconds=(timestamp - pd.Timestamp("1970-01-01")) / pd.Timedelta(seconds=1))
     frame = frame.dropna(subset=["Latitude", "Longitude", "seconds", "UserId"])
     return frame[["RouteCode", "UserId", "Longitude", "Latitude", "seconds"]]
+
+
+def read_location_chunks(path: Path, chunk_rows: int | None = 1_000_000) -> Iterable[pd.DataFrame]:
+    """Route, user, lon, lat and epoch seconds from one ``locations_*.csv``.
+
+    Monthly files reach ~10 million rows, so they are read ``chunk_rows`` at
+    a time. Rows are grouped by trip; the last (possibly unfinished) trip of
+    each chunk is carried over into the next one so no trip is cut in half.
+    """
+
+    reader = pd.read_csv(
+        path,
+        usecols=["RouteCode", "UserId", "Latitude", "Longitude", "CoordinatesDate", "CoordinatesTime"],
+        dtype={"RouteCode": "int64", "UserId": "string", "CoordinatesDate": "string", "CoordinatesTime": "string"},
+        chunksize=chunk_rows,
+    )
+    chunks = [reader] if chunk_rows is None else reader
+    carry = None
+    for chunk in chunks:
+        frame = _parse_locations(chunk)
+        if carry is not None:
+            frame = pd.concat([carry, frame], ignore_index=True)
+        if frame.empty:
+            continue
+        last_trip = frame["RouteCode"].to_numpy() == frame["RouteCode"].iloc[-1]
+        carry = frame[last_trip]
+        yield frame[~last_trip]
+    if carry is not None and not carry.empty:
+        yield carry
 
 
 def trip_cells(frame: pd.DataFrame, settings: CoverageSettings) -> pd.DataFrame:
@@ -265,9 +293,19 @@ def aggregate_locations(files: Iterable[Path], settings: CoverageSettings) -> pd
 
     trips = pd.Series(dtype="int64")
     cell_users = None
+    user_codes: dict[str, int] = {}
     for path in files:
-        print(f"  {path.name}")
-        visits = trip_cells(read_locations(path), settings)
+        print(f"  {path.name}", flush=True)
+        parts = []
+        for frame in read_location_chunks(path):
+            visits = trip_cells(frame, settings)
+            # Small integer user codes instead of UUID strings keep memory down.
+            for user in visits["user"].unique():
+                user_codes.setdefault(user, len(user_codes))
+            visits["user"] = visits["user"].map(user_codes).astype("int32")
+            parts.append(visits)
+        # A trip split across chunks or files may repeat; count it once per cell.
+        visits = pd.concat(parts, ignore_index=True).drop_duplicates(["cell", "route"])
         trips = trips.add(visits["cell"].value_counts(), fill_value=0)
         month_users = visits[["cell", "user"]].drop_duplicates()
         cell_users = (

@@ -16,6 +16,7 @@ from backend.gps_coverage import (
     classify_cells,
     classify_way,
     densify_tracks,
+    read_location_chunks,
 )
 
 SETTINGS = CoverageSettings()
@@ -114,6 +115,15 @@ def _synthetic_trips(users: int) -> pd.DataFrame:
                 )
                 step += 1
     return pd.DataFrame(rows)
+
+
+def test_chunked_reading_never_splits_a_trip(tmp_path):
+    path = tmp_path / "locations_202505.csv"
+    _synthetic_trips(users=5).to_csv(path, index=False)  # 20 rows per trip
+    chunks = list(read_location_chunks(path, chunk_rows=7))
+    routes_per_chunk = [set(chunk["RouteCode"]) for chunk in chunks]
+    assert sum(len(routes) for routes in routes_per_chunk) == 5
+    assert sum(len(chunk) for chunk in chunks) == 100
 
 
 def test_build_end_to_end(tmp_path):
