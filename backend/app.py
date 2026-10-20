@@ -9,6 +9,8 @@ import osmnx as ox
 import geopandas as gpd
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pyproj import Transformer
 from shapely.geometry import LineString
@@ -26,6 +28,13 @@ GRAPH_FILE = ROOT_DIR / "cache" / "tartu_bike.graphml"
 WATER_FILE = ROOT_DIR / "cache" / "tartu_water.geojson"
 FRONTEND_DIR = ROOT_DIR / "frontend"
 TERRAIN_DIR = ROOT_DIR / "data"
+COVERAGE_DIR = ROOT_DIR / "cache" / "gps_coverage"
+COVERAGE_FILES = {
+    "cells": "cells.geojson",
+    "edges": "edges.geojson",
+    "candidates": "candidates.geojson",
+    "summary": "summary.json",
+}
 
 
 app = FastAPI(title="Tarcycle routing API", version="0.1.0")
@@ -35,6 +44,8 @@ app.add_middleware(
     allow_methods=["GET"],
     allow_headers=["*"],
 )
+# Coverage GeoJSON layers are several MB; gzip shrinks them roughly tenfold.
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 
 @lru_cache(maxsize=1)
@@ -184,6 +195,23 @@ def station_route(
         )
     except nx.NetworkXNoPath as error:
         raise HTTPException(status_code=422, detail="No bicycle route found.") from error
+
+
+@app.get("/api/coverage/{layer}")
+def coverage_layer(layer: str) -> FileResponse:
+    """Precomputed GPS-vs-OSM comparison layers from ``backend.gps_coverage``."""
+
+    filename = COVERAGE_FILES.get(layer)
+    if filename is None:
+        raise HTTPException(status_code=404, detail=f"Unknown coverage layer: {layer}")
+    path = COVERAGE_DIR / filename
+    if not path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="Coverage not built yet. Run: python -m backend.gps_coverage",
+        )
+    media_type = "application/json" if path.suffix == ".json" else "application/geo+json"
+    return FileResponse(path, media_type=media_type)
 
 
 app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")

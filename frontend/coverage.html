@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Riders vs OSM</title>
+    <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="map-shell">
+      <div id="map" aria-label="Map of GPS bike traces compared with OpenStreetMap"></div>
+      <section class="controls coverage-panel" aria-label="GPS coverage">
+        <a class="back-link" href="./index.html">← Route planner</a>
+        <h1>Riders vs OSM</h1>
+        <p class="subtitle">Where Smart Bike riders go, compared with the OpenStreetMap bike network.</p>
+
+        <h2>Share of ridden distance</h2>
+        <div id="share-bar" class="share-bar" role="img"></div>
+        <ul id="class-legend" class="legend"></ul>
+
+        <div class="mode-switch" role="group" aria-label="Map view">
+          <button id="view-cells" class="mode active" type="button">Where people ride</button>
+          <button id="view-edges" class="mode" type="button">Use of OSM ways</button>
+        </div>
+        <div id="edge-legend" class="ramp-legend" hidden>
+          <div class="ramp"></div>
+          <div class="ramp-labels"><span id="ramp-min"></span><span>trips on the way</span><span id="ramp-max"></span></div>
+        </div>
+        <label class="checkbox"><input id="show-candidates" type="checkbox" checked /> Candidate segments</label>
+
+        <h2>Top candidates for the OSM bike map</h2>
+        <ol id="candidate-list" class="candidate-list"></ol>
+        <p id="status" role="status"></p>
+      </section>
+    </main>
+    <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+    <script src="./coverage.js"></script>
+  </body>
+</html>
