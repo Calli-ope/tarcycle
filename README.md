@@ -108,8 +108,9 @@ router has) and `gap_group`:
 | `partly` | 50–80% alongside | mixed |
 | `alongside` | ≥ 80% alongside, mostly sidewalks next to roads | none; the router can use the road |
 
-The map shows three independently switchable layers: OSM cycle paths
-(`osm_cycleways.geojson`), where riders go (all ridden ways), and the three gap
+The map shows three independently switchable layers: the router's graph
+(`router_graph.geojson`, the same `graph_from_place(..., network_type="bike")`
+call as `router()`), where riders go (all ridden ways), and the three gap
 groups. These layers can be rebuilt from the saved outputs without the raw GPS
 data: `python -m backend.gps_coverage --from-cache`.
 

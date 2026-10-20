@@ -745,6 +745,36 @@ def build(
     return summary
 
 
+def router_graph_edges(place: str = PLACE) -> gpd.GeoDataFrame:
+    """The ways the router can use: the same osmnx call as ``router()`` in app.py.
+
+    Two-way streets appear once per direction in that graph; one copy is kept.
+    """
+
+    graph = ox.graph_from_place(place, network_type="bike")
+    edges = ox.graph_to_gdfs(graph, nodes=False).reset_index(drop=True)
+    wkb = pd.Series(shapely.to_wkb(shapely.normalize(edges.geometry.values)))
+    edges = edges[~wkb.duplicated().to_numpy()]
+    joined = lambda column: [
+        ",".join(sorted(_tag_values(value))) for value in edges.get(column, [None] * len(edges))
+    ]
+    return gpd.GeoDataFrame(
+        {"highway": joined("highway"), "name": joined("name")},
+        geometry=edges.geometry.values,
+        crs=edges.crs,
+    )
+
+
+def export_router_graph(output_dir: Path, refresh: bool = False) -> Path:
+    """Write ``router_graph.geojson`` once (one Overpass download)."""
+
+    path = output_dir / "router_graph.geojson"
+    if refresh or not path.exists():
+        print("Exporting the router's graph...")
+        _write_geojson(router_graph_edges(), path)
+    return path
+
+
 def rebuild_from_cache(output_dir: Path, settings: CoverageSettings) -> dict[str, Any]:
     """Recompute the routing layers from saved outputs, without the raw GPS data.
 
@@ -784,6 +814,7 @@ def main() -> None:
     parser.add_argument("--min-users", type=int, default=CoverageSettings.min_users)
     args = parser.parse_args()
     settings = CoverageSettings(near_m=args.near, min_trips=args.min_trips, min_users=args.min_users)
+    export_router_graph(args.out, args.refresh_osm)
     if args.from_cache:
         summary = rebuild_from_cache(args.out, settings)
         print(json.dumps(summary["gps_layer"]["gap_groups"], indent=2))

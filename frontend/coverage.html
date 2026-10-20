@@ -15,14 +15,10 @@
         <h1>Riders vs OSM</h1>
         <p class="subtitle">Where Smart Bike riders go in 2025, compared with OpenStreetMap and the router's graph.</p>
 
-        <h2>1 · Cycle paths according to OSM</h2>
+        <h2>1 · Router graph: ways the engine can use</h2>
         <label class="layer-toggle">
-          <input type="checkbox" data-layers="cyc-separate-casing,cyc-separate" />
-          <span class="swatch line"></span><span>Separate cycleways and designated paths</span><span class="value" id="cyc-separate-km"></span>
-        </label>
-        <label class="layer-toggle">
-          <input type="checkbox" data-layers="cyc-on_road-casing,cyc-on_road" />
-          <span class="swatch line dashed"></span><span>Cycle lanes and tracks on roads</span><span class="value" id="cyc-on_road-km"></span>
+          <input type="checkbox" data-layers="router" />
+          <span class="swatch line"></span><span>osmnx "bike" network: roads, cycleways, paths (no footways)</span><span class="value" id="router-km"></span>
         </label>
 
         <h2>2 · Where riders actually go (GPS)</h2>

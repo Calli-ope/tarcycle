@@ -62,7 +62,7 @@ function percent(value) {
   return `${(value * 100).toFixed(value < 0.1 ? 1 : 0)}%`;
 }
 
-function renderSummary(summary, cycleways, ways) {
+function renderSummary(summary, router, ways) {
   const bar = document.querySelector("#share-bar");
   const legend = document.querySelector("#class-legend");
   const shares = summary.share_of_ridden_distance;
@@ -89,12 +89,8 @@ function renderSummary(summary, cycleways, ways) {
     document.querySelector(`#gap-${name}`).textContent =
       `${groups[name].ridden_km} km · ${percent(groups[name].share_of_gap_trip_km)}`;
   }
-  for (const kind of ["separate", "on_road"]) {
-    const km = cycleways.features
-      .filter((feature) => feature.properties.infra_kind === kind)
-      .reduce((sum, feature) => sum + lineLength(feature.geometry), 0);
-    document.querySelector(`#cyc-${kind}-km`).textContent = `${Math.round(km)} km`;
-  }
+  const routerKm = router.features.reduce((sum, feature) => sum + lineLength(feature.geometry), 0);
+  document.querySelector("#router-km").textContent = `${Math.round(routerKm).toLocaleString()} km`;
   document.querySelector("#ridden-count").textContent = `${ways.features.length.toLocaleString()} ways`;
 }
 
@@ -181,7 +177,7 @@ function tripScale(features) {
   return { maxTrips, color, width };
 }
 
-function addLayers({ cells, edges, ways, cycleways, candidates }) {
+function addLayers({ cells, edges, ways, router, candidates }) {
   const hidden = { visibility: "none", "line-cap": "round" };
   // First-analysis layers at the bottom.
   map.addSource("cells", { type: "geojson", data: cells });
@@ -218,33 +214,19 @@ function addLayers({ cells, edges, ways, cycleways, candidates }) {
     paint: { "line-color": wayScale.color, "line-width": wayScale.width(0) },
   });
 
-  // 1 · OSM cycle infrastructure, styled like a cycle map: dark ink with a
-  // white casing so it reads above the GPS colours; lanes on roads dashed.
-  map.addSource("cycleways", { type: "geojson", data: cycleways });
-  const lineWidth = (base) => ["interpolate", ["linear"], ["zoom"], 12, base, 16, base * 2];
-  for (const kind of ["separate", "on_road"]) {
-    const filter = ["==", ["get", "infra_kind"], kind];
-    map.addLayer({
-      id: `cyc-${kind}-casing`,
-      type: "line",
-      source: "cycleways",
-      filter,
-      layout: { visibility: "none", "line-cap": "round" },
-      paint: { "line-color": "#ffffff", "line-width": lineWidth(4) },
-    });
-    map.addLayer({
-      id: `cyc-${kind}`,
-      type: "line",
-      source: "cycleways",
-      filter,
-      layout: { visibility: "none", ...(kind === "separate" ? { "line-cap": "round" } : {}) },
-      paint: {
-        "line-color": "#172033",
-        "line-width": lineWidth(2),
-        ...(kind === "on_road" ? { "line-dasharray": [2, 1.5] } : {}),
-      },
-    });
-  }
+  // 1 · The router's graph: a thin dark reference line above the GPS colours.
+  map.addSource("router", { type: "geojson", data: router });
+  map.addLayer({
+    id: "router",
+    type: "line",
+    source: "router",
+    layout: { visibility: "none" },
+    paint: {
+      "line-color": "#172033",
+      "line-width": ["interpolate", ["linear"], ["zoom"], 12, 0.6, 16, 2],
+      "line-opacity": 0.8,
+    },
+  });
 
   // 3 · Gaps, drawn on top; least valuable group lowest.
   for (const name of ["alongside", "partly", "separate"]) {
@@ -287,10 +269,7 @@ function hoverText(feature) {
   const { properties } = feature;
   const id = feature.layer.id;
   if (id === "gps-ways" || id.startsWith("gap-")) return wayText(properties);
-  if (id.startsWith("cyc-")) {
-    const kind = properties.infra_kind === "separate" ? "Separate cycleway / designated path" : "Cycle lane or track on a road";
-    return `${wayName(properties)} (${properties.highway})<br />OSM: ${kind}`;
-  }
+  if (id === "router") return `${wayName(properties)} (${properties.highway})<br />In the router's graph`;
   if (id === "edges") {
     return `${wayName(properties)}<br />${properties.trips} trips · ${properties.edge_class.replace("_", " ")}`;
   }
@@ -299,7 +278,7 @@ function hoverText(feature) {
 }
 
 function addHover() {
-  const layers = ["candidates-fill", "cells", "edges", "gps-ways", "cyc-separate", "cyc-on_road", "gap-alongside", "gap-partly", "gap-separate"];
+  const layers = ["candidates-fill", "cells", "edges", "gps-ways", "router", "gap-alongside", "gap-partly", "gap-separate"];
   for (const layer of layers) {
     map.on("mousemove", layer, (event) => {
       map.getCanvas().style.cursor = "pointer";
@@ -315,11 +294,11 @@ function addHover() {
 map.on("load", async () => {
   statusText.textContent = "Loading coverage layers...";
   try {
-    const names = ["summary", "cells", "edges", "ways", "cycleways", "candidates"];
+    const names = ["summary", "cells", "edges", "ways", "router", "candidates"];
     const loaded = Object.fromEntries(
       (await Promise.all(names.map(getJson))).map((body, index) => [names[index], body]),
     );
-    renderSummary(loaded.summary, loaded.cycleways, loaded.ways);
+    renderSummary(loaded.summary, loaded.router, loaded.ways);
     addLayers(loaded);
     const busiest = (feature) => feature.properties.trips * feature.properties.ridden_m;
     gapFeatures = loaded.ways.features

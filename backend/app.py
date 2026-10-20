@@ -34,6 +34,7 @@ COVERAGE_FILES = {
     "edges": "edges.geojson",
     "ways": "gps_ways.geojson",
     "cycleways": "osm_cycleways.geojson",
+    "router": "router_graph.geojson",
     "candidates": "candidates.geojson",
     "summary": "summary.json",
 }
