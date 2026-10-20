@@ -1,6 +1,6 @@
 """Join the Smart Bike GPS-usage layer onto an OSM routing graph.
 
-``python -m backend.gps_coverage`` writes ``cache/gps_coverage/gps_ways.geojson``:
+``python -m backend.gps_coverage`` writes ``data/gps_coverage/gps_ways.geojson``:
 one row per OSM way that riders use, keyed by the OSM way id. Every osmnx
 graph stores the way id(s) of each edge in its ``osmid`` attribute, so the
 layer can be joined onto any graph, including the router's.

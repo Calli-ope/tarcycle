@@ -6,3 +6,8 @@ __pycache__/
 run.bat
 # Private Smart Bike data (trip records, GPS traces) - never commit
 data/raw/
+
+# Public OSM reference files in the GPS coverage outputs: large, re-downloaded on demand
+data/gps_coverage/osm_edges.gpkg
+data/gps_coverage/study_area.geojson
+data/gps_coverage/osm_cycleways.geojson

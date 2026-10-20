@@ -6,11 +6,12 @@ const CLASSES = {
   osm_not_bikeable: { label: "OSM way closed to bikes", color: "#1baf7a" },
   no_osm_way: { label: "No OSM way at all", color: "#eb6834" },
 };
-// Gaps in the router graph; orange/aqua are a colour-blind-validated pair,
-// grey marks the low-value group (sidewalks next to roads the router has).
+// Gaps in the router graph. Separate and partly-alongside paths are the gaps
+// GPS covers and share one green; grey marks the low-value group (sidewalks
+// next to roads the router already has).
 const GAPS = {
-  separate: { label: "Separate path", color: "#eb6834", extraWidth: 2.5 },
-  partly: { label: "Partly alongside a router way", color: "#1baf7a", extraWidth: 1.5 },
+  separate: { label: "Separate path", color: "#1baf7a", extraWidth: 2 },
+  partly: { label: "Partly alongside a router way", color: "#1baf7a", extraWidth: 2 },
   alongside: { label: "Alongside a router way", color: "#898781", extraWidth: 1 },
 };
 const RAMP = ["#86b6ef", "#5598e7", "#2a78d6", "#1c5cab", "#104281"];
@@ -85,10 +86,12 @@ function renderSummary(summary, router, ways) {
     legend.append(item);
   }
   const groups = summary.gps_layer.gap_groups;
-  for (const name of Object.keys(GAPS)) {
-    document.querySelector(`#gap-${name}`).textContent =
-      `${groups[name].ridden_km} km · ${percent(groups[name].share_of_gap_trip_km)}`;
-  }
+  const covered = ["separate", "partly"].map((name) => groups[name]);
+  const coveredKm = covered.reduce((sum, group) => sum + group.ridden_km, 0);
+  const coveredShare = covered.reduce((sum, group) => sum + group.share_of_gap_trip_km, 0);
+  document.querySelector("#gap-covered").textContent = `${coveredKm.toFixed(1)} km · ${percent(coveredShare)}`;
+  document.querySelector("#gap-alongside").textContent =
+    `${groups.alongside.ridden_km} km · ${percent(groups.alongside.share_of_gap_trip_km)}`;
   const routerKm = router.features.reduce((sum, feature) => sum + lineLength(feature.geometry), 0);
   document.querySelector("#router-km").textContent = `${Math.round(routerKm).toLocaleString()} km`;
   document.querySelector("#ridden-count").textContent = `${ways.features.length.toLocaleString()} ways`;
@@ -136,7 +139,9 @@ function candidateText(properties) {
 }
 
 function renderGapList() {
-  const shown = new Set(toggles.filter((input) => input.checked && input.dataset.group).map((input) => input.dataset.group));
+  const shown = new Set(
+    toggles.filter((input) => input.checked && input.dataset.group).flatMap((input) => input.dataset.group.split(",")),
+  );
   const list = document.querySelector("#gap-list");
   list.replaceChildren();
   const top = gapFeatures

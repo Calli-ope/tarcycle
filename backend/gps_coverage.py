@@ -39,7 +39,7 @@ from shapely.geometry import MultiPoint, Polygon
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_LOCATIONS_DIR = ROOT_DIR / "data" / "raw" / "Locations"
-DEFAULT_OUTPUT_DIR = ROOT_DIR / "cache" / "gps_coverage"
+DEFAULT_OUTPUT_DIR = ROOT_DIR / "data" / "gps_coverage"
 PLACE = "Tartu, Estonia"
 METRIC_CRS = "EPSG:3301"
 CELL_ID_FACTOR = 10_000_000
@@ -647,7 +647,8 @@ def way_usage(
         share[missing] = alongside_share(
             np.asarray(ways.geometry.values)[missing], np.asarray(router), settings.alongside_m
         )
-    ways["alongside_share"] = np.round(share, 2)
+    # Rounded down so the stored value never crosses a gap_group threshold.
+    ways["alongside_share"] = np.floor(share * 100) / 100
     ways["gap_group"] = [None if np.isnan(value) else gap_group(value) for value in share]
     return ways.reset_index().sort_values("trips")
 

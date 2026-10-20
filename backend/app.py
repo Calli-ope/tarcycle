@@ -28,7 +28,7 @@ GRAPH_FILE = ROOT_DIR / "cache" / "tartu_bike.graphml"
 WATER_FILE = ROOT_DIR / "cache" / "tartu_water.geojson"
 FRONTEND_DIR = ROOT_DIR / "frontend"
 TERRAIN_DIR = ROOT_DIR / "data"
-COVERAGE_DIR = ROOT_DIR / "cache" / "gps_coverage"
+COVERAGE_DIR = ROOT_DIR / "data" / "gps_coverage"
 COVERAGE_FILES = {
     "cells": "cells.geojson",
     "edges": "edges.geojson",
