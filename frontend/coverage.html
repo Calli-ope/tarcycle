@@ -13,24 +13,40 @@
       <section class="controls coverage-panel" aria-label="GPS coverage">
         <a class="back-link" href="./index.html">← Route planner</a>
         <h1>Riders vs OSM</h1>
-        <p class="subtitle">Where Smart Bike riders go, compared with the OpenStreetMap bike network.</p>
+        <p class="subtitle">Where Smart Bike riders go in 2025, compared with OpenStreetMap and the router's graph.</p>
 
-        <h2>Share of ridden distance</h2>
-        <div id="share-bar" class="share-bar" role="img"></div>
-        <ul id="class-legend" class="legend"></ul>
-
-        <div class="mode-switch" role="group" aria-label="Map view">
-          <button id="view-cells" class="mode active" type="button">Where people ride</button>
+        <div class="mode-switch views" role="group" aria-label="Map view">
+          <button id="view-ways" class="mode active" type="button">GPS layer for routing</button>
+          <button id="view-cells" class="mode" type="button">Where people ride</button>
           <button id="view-edges" class="mode" type="button">Use of OSM ways</button>
         </div>
-        <div id="edge-legend" class="ramp-legend" hidden>
-          <div class="ramp"></div>
-          <div class="ramp-labels"><span id="ramp-min"></span><span>trips on the way</span><span id="ramp-max"></span></div>
-        </div>
-        <label class="checkbox"><input id="show-candidates" type="checkbox" checked /> Candidate segments</label>
 
-        <h2>Top candidates for the OSM bike map</h2>
-        <ol id="candidate-list" class="candidate-list"></ol>
+        <div id="ways-legend">
+          <h2>Ways riders use</h2>
+          <ul class="legend">
+            <li><span class="swatch" style="background: #1baf7a"></span><span>Ridden, missing from router graph</span><span class="value" id="missing-km"></span></li>
+          </ul>
+        </div>
+        <div id="ramp-legend" class="ramp-legend">
+          <p id="ramp-label" class="ramp-title"></p>
+          <div class="ramp"></div>
+          <div class="ramp-labels"><span id="ramp-min"></span><span id="ramp-max"></span></div>
+        </div>
+
+        <div id="cells-legend" hidden>
+          <h2>Share of ridden distance</h2>
+          <div id="share-bar" class="share-bar" role="img"></div>
+          <ul id="class-legend" class="legend"></ul>
+        </div>
+
+        <h2>Ridden ways missing from the router graph</h2>
+        <ol id="missing-list" class="candidate-list"></ol>
+
+        <details class="older">
+          <summary>Candidate zones (first analysis)</summary>
+          <label class="checkbox"><input id="show-candidates" type="checkbox" /> Show on map</label>
+          <ol id="candidate-list" class="candidate-list"></ol>
+        </details>
         <p id="status" role="status"></p>
       </section>
     </main>

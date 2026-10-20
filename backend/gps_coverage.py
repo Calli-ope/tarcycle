@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -70,6 +71,18 @@ NOT_BIKEABLE_HIGHWAYS = {
     "platform",
     "steps",
 }
+# osmnx's own bike-network filter (osmnx/_overpass.py, ``filters["bike"]``).
+# Overpass ``!~`` is an unanchored regex, so these match anywhere in a value.
+OSMNX_BIKE_EXCLUDED = {
+    "area": "yes",
+    "access": "private",
+    "highway": (
+        "abandoned|bus_guideway|construction|corridor|elevator|escalator|footway|motor|no|"
+        "planned|platform|proposed|raceway|razed|rest_area|services|steps"
+    ),
+    "bicycle": "no",
+    "service": "private",
+}
 
 
 @dataclass(frozen=True)
@@ -85,6 +98,8 @@ class CoverageSettings:
     neighbour_cells: int = 2
     min_candidate_cells: int = 5
     area_buffer_m: float = 500.0
+    trim_ends_m: float = 50.0
+    min_trip_minutes: float = 2.0
 
 
 # --- OSM reference network -------------------------------------------------
@@ -120,6 +135,20 @@ def classify_way(tags: dict[str, Any]) -> str:
     return "bikeable"
 
 
+def in_osmnx_bike_network(tags: dict[str, Any]) -> bool:
+    """Whether ``ox.graph_from_*(network_type="bike")`` keeps this way.
+
+    That is the graph the router is built from, so ``False`` means the
+    router cannot use the way at all (e.g. every ``highway=footway``).
+    """
+
+    return not any(
+        re.search(pattern, value)
+        for key, pattern in OSMNX_BIKE_EXCLUDED.items()
+        for value in _tag_values(tags.get(key))
+    )
+
+
 def study_area(place: str, buffer_m: float) -> Polygon:
     """The city boundary, buffered, in EPSG:3301."""
 
@@ -128,15 +157,22 @@ def study_area(place: str, buffer_m: float) -> Polygon:
 
 
 def download_osm_edges(area: Polygon) -> gpd.GeoDataFrame:
-    """All OSM ways in the area (not only the bike network), classified, in EPSG:3301."""
+    """All OSM ways in the area (not only the bike network), classified, in EPSG:3301.
+
+    The graph is left unsimplified, so every edge is a piece of exactly one
+    OSM way and carries that way's id (``way_id``), the key for joining the
+    GPS layer onto any other OSM graph.
+    """
 
     ox.settings.useful_tags_way = list(
         dict.fromkeys([*ox.settings.useful_tags_way, *EXTRA_WAY_TAGS])
     )
     polygon = gpd.GeoSeries([area], crs=METRIC_CRS).to_crs("EPSG:4326").iloc[0]
-    graph = ox.graph_from_polygon(polygon, network_type="all", retain_all=True)
+    graph = ox.graph_from_polygon(polygon, network_type="all", simplify=False, retain_all=True)
     edges = ox.graph_to_gdfs(graph, nodes=False).reset_index(drop=True)
-    edges["edge_class"] = [classify_way(row) for row in edges.to_dict("records")]
+    records = edges.to_dict("records")
+    edges["edge_class"] = [classify_way(row) for row in records]
+    edges["in_bike_graph"] = [in_osmnx_bike_network(row) for row in records]
     edges = edges.to_crs(METRIC_CRS)
     # Two-way streets appear once per direction; keep one copy.
     wkb = pd.Series(shapely.to_wkb(shapely.normalize(edges.geometry.values)))
@@ -145,7 +181,13 @@ def download_osm_edges(area: Polygon) -> gpd.GeoDataFrame:
         ",".join(sorted(_tag_values(value))) for value in edges.get(column, [None] * len(edges))
     ]
     return gpd.GeoDataFrame(
-        {"highway": joined("highway"), "name": joined("name"), "edge_class": edges["edge_class"].to_numpy()},
+        {
+            "way_id": edges["osmid"].astype("int64").to_numpy(),
+            "highway": joined("highway"),
+            "name": joined("name"),
+            "edge_class": edges["edge_class"].to_numpy(),
+            "in_bike_graph": edges["in_bike_graph"].to_numpy(),
+        },
         geometry=edges.geometry.values,
         crs=METRIC_CRS,
     ).reset_index(drop=True)
@@ -166,8 +208,12 @@ def load_osm_reference(
         gpd.GeoDataFrame(geometry=[area], crs=METRIC_CRS).to_file(area_file, driver="GeoJSON")
         edges.to_file(edges_file, driver="GPKG")
         return area, edges
+    edges = gpd.read_file(edges_file).to_crs(METRIC_CRS)
+    if not {"way_id", "in_bike_graph"} <= set(edges.columns):
+        print("Cached OSM network predates way ids; downloading again.")
+        return load_osm_reference(output_dir, settings, refresh=True)
     area = gpd.read_file(area_file).to_crs(METRIC_CRS).geometry.iloc[0]
-    return area, gpd.read_file(edges_file).to_crs(METRIC_CRS)
+    return area, edges
 
 
 # --- GPS traces -------------------------------------------------------------
@@ -185,28 +231,48 @@ def densify_tracks(
     Inputs must be sorted by route, then time. A segment between consecutive
     points is kept only if both belong to the same route, the gap is short in
     space and time, and the implied speed is realistic. Isolated points (GPS
-    spikes, single-point trips) produce no samples. Returns ``(route, x, y)``.
+    spikes, single-point trips) produce no samples.
+
+    Samples within ``trim_ends_m`` of the start or end of a trip (measured
+    along the track) are dropped: every trip begins and ends at a station,
+    so station surroundings would otherwise look like busy paths.
+    Returns ``(route, x, y)``.
     """
 
     dx = np.diff(x)
     dy = np.diff(y)
     dt = np.diff(t)
     distance = np.hypot(dx, dy)
+    same_route = route[1:] == route[:-1]
     valid = (
-        (route[1:] == route[:-1])
+        same_route
         & (distance <= settings.max_gap_m)
         & (dt <= settings.max_gap_s)
         & (distance <= settings.max_speed_ms * np.maximum(dt, 1.0))
     )
+    # Distance along the track from the trip's first point, and the trip's total.
+    index = np.arange(len(x))
+    cumulative = np.concatenate([[0.0], np.cumsum(np.where(valid, distance, 0.0))])
+    first = np.maximum.accumulate(np.where(np.concatenate([[True], ~same_route]), index, 0))
+    last = np.minimum.accumulate(
+        np.where(np.concatenate([~same_route, [True]]), index, len(x))[::-1]
+    )[::-1]
+    along = cumulative - cumulative[first]
+    total = along[last]
+
     segments = np.flatnonzero(valid)
     steps = np.maximum(1, np.ceil(distance[segments] / settings.sample_step_m)).astype(np.int64)
     owner = np.repeat(segments, steps)
     offset = np.arange(steps.sum()) - np.repeat(np.cumsum(steps) - steps, steps)
     fraction = offset / np.repeat(steps, steps)
+    point = np.concatenate([owner, segments + 1])
+    sample_along = np.concatenate([along[owner] + distance[owner] * fraction, along[segments + 1]])
     sample_x = np.concatenate([x[owner] + dx[owner] * fraction, x[segments + 1]])
     sample_y = np.concatenate([y[owner] + dy[owner] * fraction, y[segments + 1]])
-    sample_route = np.concatenate([route[owner], route[segments + 1]])
-    return sample_route, sample_x, sample_y
+    keep = (sample_along >= settings.trim_ends_m) & (
+        total[point] - sample_along >= settings.trim_ends_m
+    )
+    return route[point][keep], sample_x[keep], sample_y[keep]
 
 
 def cell_ids(x: np.ndarray, y: np.ndarray, cell_size_m: float) -> np.ndarray:
@@ -288,8 +354,28 @@ def trip_cells(frame: pd.DataFrame, settings: CoverageSettings) -> pd.DataFrame:
     return visits
 
 
-def aggregate_locations(files: Iterable[Path], settings: CoverageSettings) -> pd.DataFrame:
-    """Per-cell distinct trip and rider counts over all location files."""
+def valid_route_codes(routes_file: Path, min_trip_minutes: float) -> np.ndarray:
+    """RouteCodes of real trips in ``routes_2025.csv``.
+
+    Drops aborted rentals (zero length or shorter than ``min_trip_minutes``).
+    Only these three columns are read; the file also holds personal data
+    (birth year, ID code) that this pipeline never touches.
+    """
+
+    routes = pd.read_csv(routes_file, usecols=["RouteCode", "Length", "DurationMinutes"])
+    real = (routes["Length"] > 0) & (routes["DurationMinutes"] >= min_trip_minutes)
+    return routes.loc[real, "RouteCode"].to_numpy()
+
+
+def aggregate_locations(
+    files: Iterable[Path],
+    settings: CoverageSettings,
+    valid_routes: np.ndarray | None = None,
+) -> pd.DataFrame:
+    """Per-cell distinct trip and rider counts over all location files.
+
+    If ``valid_routes`` is given, only those trips are counted.
+    """
 
     trips = pd.Series(dtype="int64")
     cell_users = None
@@ -298,6 +384,8 @@ def aggregate_locations(files: Iterable[Path], settings: CoverageSettings) -> pd
         print(f"  {path.name}", flush=True)
         parts = []
         for frame in read_location_chunks(path):
+            if valid_routes is not None:
+                frame = frame[frame["RouteCode"].isin(valid_routes)]
             visits = trip_cells(frame, settings)
             # Small integer user codes instead of UUID strings keep memory down.
             for user in visits["user"].unique():
@@ -371,6 +459,7 @@ def compare_with_osm(
     distance_infra, _ = _nearest(geometry[infra], points, search)
     distance_bikeable, _ = _nearest(geometry[bikeable], points, search)
     distance_any, nearest_edge = _nearest(geometry, points, search)
+    distance_router, _ = _nearest(geometry[edges["in_bike_graph"].to_numpy(bool)], points, search)
     result = cells.copy()
     result["x"] = x
     result["y"] = y
@@ -378,6 +467,7 @@ def compare_with_osm(
         distance_infra, distance_bikeable, distance_any, settings.near_m
     )
     result["edge"] = np.where(distance_any <= settings.near_m, nearest_edge, -1)
+    result["in_bike_graph"] = distance_router <= settings.near_m
     return result
 
 
@@ -390,7 +480,17 @@ def summarise(cells: pd.DataFrame, settings: CoverageSettings) -> dict[str, Any]
 
     trip_cells_by_class = cells.groupby("cell_class")["trips"].sum().reindex(CELL_CLASSES, fill_value=0)
     total = max(1, int(trip_cells_by_class.sum()))
+    router = np.where(
+        cells["in_bike_graph"], "in_router_graph",
+        np.where(cells["edge"] >= 0, "other_osm_way", "no_osm_way"),
+    )
+    trip_cells_by_router = cells.groupby(router)["trips"].sum()
     return {
+        # Can the router (osmnx "bike" graph) follow where riders went?
+        "router_graph_share_of_ridden_distance": {
+            name: round(int(trip_cells_by_router.get(name, 0)) / total, 4)
+            for name in ("in_router_graph", "other_osm_way", "no_osm_way")
+        },
         "ridden_km_approx": {
             name: round(int(value) * settings.cell_size_m / 1000, 1)
             for name, value in trip_cells_by_class.items()
@@ -465,6 +565,54 @@ def edge_usage(
     return used.sort_values("trips")
 
 
+def way_usage(
+    cells: pd.DataFrame, edges: gpd.GeoDataFrame, settings: CoverageSettings
+) -> gpd.GeoDataFrame:
+    """The GPS layer for routing: one row per OSM way that riders use.
+
+    ``trips`` is the median distinct-trip count of the busy cells matched to
+    the way, ``covered_share`` the fraction of the way's length with such
+    cells. For ways outside the router graph, only cells with no router-graph
+    way within ``near_m`` count, so riders on a road do not leak onto the
+    sidewalk drawn next to it.
+    """
+
+    matched = cells[cells["edge"] >= 0]
+    edge = matched["edge"].to_numpy()
+    way_in_graph = edges["in_bike_graph"].to_numpy(bool)[edge]
+    matched = matched[way_in_graph | ~matched["in_bike_graph"].to_numpy(bool)]
+    edge = matched["edge"].to_numpy()
+    stats = (
+        pd.DataFrame({"way_id": edges["way_id"].to_numpy()[edge], "trips": matched["trips"].to_numpy()})
+        .groupby("way_id")["trips"]
+        .agg(["median", "size"])
+    )
+    pieces = edges[edges["way_id"].isin(stats.index)]
+    ways = pieces.dissolve(by="way_id", aggfunc="first").join(stats)
+    ways = ways.set_geometry(shapely.line_merge(np.asarray(ways.geometry.values)), crs=METRIC_CRS)
+    ways["length_m"] = ways.length.round()
+    ways["trips"] = ways["median"].astype("int64")
+    ways["covered_share"] = np.minimum(
+        1.0, ways["size"] * settings.cell_size_m / np.maximum(ways["length_m"], 1.0)
+    ).round(2)
+    return ways.drop(columns=["median", "size"]).reset_index().sort_values("trips")
+
+
+def summarise_ways(ways: gpd.GeoDataFrame) -> dict[str, Any]:
+    """Headline numbers for ridden ways the router graph does not contain."""
+
+    missing = ways[~ways["in_bike_graph"].astype(bool)]
+    return {
+        "ridden_ways": len(ways),
+        "ridden_ways_missing_from_router_graph": len(missing),
+        "missing_ridden_length_km": round(float((missing["length_m"] * missing["covered_share"]).sum()) / 1000, 1),
+        "missing_by_highway_km": (
+            (missing["length_m"] * missing["covered_share"]).groupby(missing["highway"]).sum().div(1000).round(1)
+            .sort_values(ascending=False).head(8).to_dict()
+        ),
+    }
+
+
 # --- Pipeline -----------------------------------------------------------------
 
 
@@ -477,13 +625,18 @@ def build(
     output_dir: Path,
     settings: CoverageSettings,
     refresh_osm: bool = False,
+    routes_file: Path | None = None,
 ) -> dict[str, Any]:
     files = sorted(locations_dir.glob("locations_*.csv"))
     if not files:
         raise FileNotFoundError(f"No locations_*.csv files in {locations_dir}")
     area, edges = load_osm_reference(output_dir, settings, refresh_osm)
     print(f"Rasterising {len(files)} GPS files onto a {settings.cell_size_m:g} m grid...")
-    cells = aggregate_locations(files, settings)
+    valid_routes = None
+    if routes_file is not None:
+        valid_routes = valid_route_codes(routes_file, settings.min_trip_minutes)
+        print(f"Using {len(valid_routes)} real trips from {routes_file.name} (aborted rentals dropped).")
+    cells = aggregate_locations(files, settings, valid_routes)
     x, y = cell_centres(cells["cell"].to_numpy(), settings.cell_size_m)
     cells = cells[shapely.contains_xy(area, x, y)]
     print(f"Comparing {len(cells)} cells with {len(edges)} OSM ways...")
@@ -494,6 +647,9 @@ def build(
     candidates = find_candidates(busy, settings)
     summary["exported_cells"] = len(busy)
     summary["candidates"] = candidates["cell_class"].value_counts().to_dict()
+    ways = way_usage(busy, edges, settings)
+    summary["gps_layer"] = summarise_ways(ways)
+    summary["trips_filtered_by_routes_file"] = routes_file is not None
 
     output_dir.mkdir(parents=True, exist_ok=True)
     _write_geojson(
@@ -505,6 +661,7 @@ def build(
         output_dir / "cells.geojson",
     )
     _write_geojson(edge_usage(busy, edges), output_dir / "edges.geojson")
+    _write_geojson(ways, output_dir / "gps_ways.geojson")
     _write_geojson(candidates, output_dir / "candidates.geojson")
     (output_dir / "summary.json").write_text(json.dumps(summary, indent=2))
     return summary
@@ -514,13 +671,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--locations", type=Path, default=DEFAULT_LOCATIONS_DIR)
     parser.add_argument("--out", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--routes", type=Path, help="routes_2025.csv, to drop aborted rentals")
     parser.add_argument("--refresh-osm", action="store_true", help="re-download OSM ways")
     parser.add_argument("--near", type=float, default=CoverageSettings.near_m, help="metres from a way that still count as on it")
     parser.add_argument("--min-trips", type=int, default=CoverageSettings.min_trips)
     parser.add_argument("--min-users", type=int, default=CoverageSettings.min_users)
     args = parser.parse_args()
     settings = CoverageSettings(near_m=args.near, min_trips=args.min_trips, min_users=args.min_users)
-    summary = build(args.locations, args.out, settings, args.refresh_osm)
+    summary = build(args.locations, args.out, settings, args.refresh_osm, args.routes)
     print(json.dumps(summary["share_of_ridden_distance"], indent=2))
     print(f"Wrote results to {args.out}")
 

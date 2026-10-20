@@ -64,14 +64,18 @@ OSM bike map.
    all Tartu OSM ways once into `cache/gps_coverage/`):
 
    ```powershell
-   python -m backend.gps_coverage --locations data/raw/Locations
+   python -m backend.gps_coverage --locations data/raw/Locations --routes data/raw/Routes/routes_2025.csv
    ```
+
+   `--routes` is optional; with it, aborted rentals (length 0 or under 2
+   minutes) are dropped. Only `RouteCode`, `Length` and `DurationMinutes` are
+   read from that file.
 
 3. Start the server as above and open <http://127.0.0.1:8000/coverage.html>.
 
 How it works: each trip is cleaned (route breaks, GPS spikes and gaps longer
-than 200 m or 60 s are dropped), resampled every 5 m and rasterised onto a 10 m
-grid. Each cell counts distinct trips and riders and is classified by the
+than 200 m or 60 s are dropped), its first and last 50 m are trimmed (station
+surroundings), and it is resampled every 5 m and rasterised onto a 10 m grid. Each cell counts distinct trips and riders and is classified by the
 nearest OSM way within 15 m:
 
 | Class | Meaning | What it suggests for OSM |
@@ -87,6 +91,28 @@ and 5 distinct riders are exported (`--min-trips`, `--min-users`), so the
 outputs are aggregated and do not reveal individual trips. Outputs:
 `cache/gps_coverage/{cells,edges,candidates}.geojson` and `summary.json`
 (share of ridden distance per class), served at `/api/coverage/{layer}`.
+
+### GPS layer for routing
+
+`cache/gps_coverage/gps_ways.geojson` has one row per OSM way that riders use:
+`way_id` (OSM way id), `highway`, `name`, `trips` (median Smart Bike trips in
+2025), `covered_share` (fraction of the way ridden), `length_m` and
+`in_bike_graph`. `in_bike_graph=false` means the router's osmnx `bike` graph
+does not contain the way at all, mostly `highway=footway`. These show in
+green on the map's "GPS layer for routing" view.
+
+The layer does not change routing. To use it in the router, join it by OSM way
+id with `backend/gps_layer.py`:
+
+```python
+from backend.gps_layer import load_gps_ways, edge_gps_trips
+
+gps_ways = load_gps_ways("cache/gps_coverage/gps_ways.geojson")  # once
+trips = edge_gps_trips(edge_attributes, gps_ways)                # per edge; None if unridden
+```
+
+`edges.geojson` (trips per OSM edge) is still written, for comparison with
+earlier runs.
 
 Known limitations: OSM pedestrian squares mapped as areas are not ways, so
 riding across them shows up as `no_osm_way`; station surroundings may too.

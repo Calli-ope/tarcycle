@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 
 import geopandas as gpd
 import numpy as np
@@ -7,6 +8,7 @@ import pytest
 from pyproj import Transformer
 from shapely.geometry import LineString, box
 
+from backend.gps_layer import edge_gps_trips, load_gps_ways, way_ids
 from backend.gps_coverage import (
     CoverageSettings,
     METRIC_CRS,
@@ -16,10 +18,13 @@ from backend.gps_coverage import (
     classify_cells,
     classify_way,
     densify_tracks,
+    in_osmnx_bike_network,
+    valid_route_codes,
     read_location_chunks,
 )
 
 SETTINGS = CoverageSettings()
+NO_TRIM = replace(SETTINGS, trim_ends_m=0.0)
 ORIGIN_X, ORIGIN_Y = 659_000.0, 6_474_000.0
 
 
@@ -47,7 +52,7 @@ def test_densify_samples_every_step_and_breaks_between_routes():
     x = np.array([0.0, 20.0, 1000.0, 1000.0])
     y = np.array([0.0, 0.0, 0.0, 10.0])
     t = np.array([0.0, 10.0, 0.0, 10.0])
-    sample_route, sample_x, _ = densify_tracks(route, x, y, t, SETTINGS)
+    sample_route, sample_x, _ = densify_tracks(route, x, y, t, NO_TRIM)
     route_one = np.sort(sample_x[sample_route == 1])
     np.testing.assert_allclose(route_one, [0, 5, 10, 15, 20])
     # No sample interpolated across the route boundary (x between 20 and 1000).
@@ -59,13 +64,13 @@ def test_densify_drops_gps_spikes_and_long_gaps():
     x = np.array([0.0, 40.0, 900.0, 940.0])  # 40 m in 10 s is fine, 860 m is a spike
     y = np.zeros(4)
     t = np.array([0.0, 10.0, 20.0, 30.0])
-    _, sample_x, _ = densify_tracks(route, x, y, t, SETTINGS)
+    _, sample_x, _ = densify_tracks(route, x, y, t, NO_TRIM)
     assert not np.any((sample_x > 40) & (sample_x < 900))
 
 
 def test_isolated_point_produces_no_samples():
     sample_route, _, _ = densify_tracks(
-        np.array([7]), np.array([1.0]), np.array([1.0]), np.array([0.0]), SETTINGS
+        np.array([7]), np.array([1.0]), np.array([1.0]), np.array([0.0]), NO_TRIM
     )
     assert len(sample_route) == 0
 
@@ -135,7 +140,7 @@ def test_build_end_to_end(tmp_path):
     area = box(ORIGIN_X - 500, ORIGIN_Y - 500, ORIGIN_X + 1000, ORIGIN_Y + 1000)
     gpd.GeoDataFrame(geometry=[area], crs=METRIC_CRS).to_file(out / "study_area.geojson")
     gpd.GeoDataFrame(
-        {"highway": ["cycleway"], "name": ["Test"], "edge_class": ["cycle_infra"]},
+        {"way_id": [101], "highway": ["cycleway"], "name": ["Test"], "edge_class": ["cycle_infra"], "in_bike_graph": [True]},
         geometry=[LineString([(ORIGIN_X - 50, ORIGIN_Y), (ORIGIN_X + 450, ORIGIN_Y)])],
         crs=METRIC_CRS,
     ).to_file(out / "osm_edges.gpkg", driver="GPKG")
@@ -150,7 +155,7 @@ def test_build_end_to_end(tmp_path):
     best = candidates[0]["properties"]
     assert best["cell_class"] == "no_osm_way"
     assert best["median_trips"] == 12
-    assert 350 <= best["length_m"] <= 420
+    assert 280 <= best["length_m"] <= 420
     lon, lat = candidates[0]["geometry"]["coordinates"][0][0]
     assert 26 < lon < 27 and 58 < lat < 59  # GeoJSON is [lng, lat]
     edges = json.loads((out / "edges.geojson").read_text())["features"]
@@ -166,7 +171,7 @@ def test_privacy_threshold_hides_rare_paths(tmp_path):
     area = box(ORIGIN_X - 500, ORIGIN_Y - 500, ORIGIN_X + 1000, ORIGIN_Y + 1000)
     gpd.GeoDataFrame(geometry=[area], crs=METRIC_CRS).to_file(out / "study_area.geojson")
     gpd.GeoDataFrame(
-        {"highway": ["cycleway"], "name": [""], "edge_class": ["cycle_infra"]},
+        {"way_id": [101], "highway": ["cycleway"], "name": [""], "edge_class": ["cycle_infra"], "in_bike_graph": [True]},
         geometry=[LineString([(ORIGIN_X, ORIGIN_Y), (ORIGIN_X + 400, ORIGIN_Y)])],
         crs=METRIC_CRS,
     ).to_file(out / "osm_edges.gpkg", driver="GPKG")
@@ -175,3 +180,108 @@ def test_privacy_threshold_hides_rare_paths(tmp_path):
 
     assert summary["exported_cells"] == 0
     assert json.loads((out / "cells.geojson").read_text())["features"] == []
+
+
+def test_densify_trims_trip_ends_near_stations():
+    route = np.repeat([1, 2], 16)
+    x = np.tile(np.arange(0, 320, 20.0), 2)
+    y = np.repeat([0.0, 1000.0], 16)
+    t = np.tile(np.arange(16) * 5.0, 2)
+    sample_route, sample_x, _ = densify_tracks(route, x, y, t, SETTINGS)
+    for trip in (1, 2):
+        along = sample_x[sample_route == trip]
+        assert along.min() >= 50 and along.max() <= 250
+
+
+@pytest.mark.parametrize(
+    ("tags", "expected"),
+    [
+        ({"highway": "residential"}, True),
+        ({"highway": "cycleway"}, True),
+        ({"highway": "footway"}, False),
+        ({"highway": "footway", "bicycle": "yes"}, False),  # osmnx drops every footway
+        ({"highway": "steps"}, False),
+        ({"highway": "motorway_link"}, False),
+        ({"highway": "residential", "bicycle": "no"}, False),
+        ({"highway": "service", "service": "private"}, False),
+        ({"highway": "pedestrian", "area": "yes"}, False),
+        ({"highway": "pedestrian"}, True),
+    ],
+)
+def test_in_osmnx_bike_network(tags, expected):
+    assert in_osmnx_bike_network(tags) is expected
+
+
+def test_valid_route_codes_drops_aborted_rentals(tmp_path):
+    path = tmp_path / "routes_2025.csv"
+    pd.DataFrame(
+        {
+            "RouteCode": [1, 2, 3, 4],
+            "Length": [2.1, 0.0, 0.3, 1.0],
+            "DurationMinutes": [10.0, 5.0, 1.2, 2.0],
+            "PersonalIdCode": [501, 502, 503, 504],
+        }
+    ).to_csv(path, index=False)
+    assert list(valid_route_codes(path, min_trip_minutes=2.0)) == [1, 4]
+
+
+def _write_osm(out, rows):
+    area = box(ORIGIN_X - 500, ORIGIN_Y - 500, ORIGIN_X + 1000, ORIGIN_Y + 1000)
+    gpd.GeoDataFrame(geometry=[area], crs=METRIC_CRS).to_file(out / "study_area.geojson")
+    frame = pd.DataFrame(rows)
+    gpd.GeoDataFrame(
+        frame.drop(columns="geometry"), geometry=list(frame["geometry"]), crs=METRIC_CRS
+    ).to_file(out / "osm_edges.gpkg", driver="GPKG")
+
+
+def test_gps_layer_marks_ridden_ways_missing_from_router_graph(tmp_path):
+    locations = tmp_path / "Locations"
+    locations.mkdir()
+    trips = _synthetic_trips(users=14)
+    trips.to_csv(locations / "locations_202505.csv", index=False)
+    routes = tmp_path / "routes_2025.csv"
+    route_codes = sorted(trips["RouteCode"].unique())
+    pd.DataFrame(
+        {
+            "RouteCode": route_codes,
+            "Length": [0.0, 0.0] + [1.5] * (len(route_codes) - 2),  # two aborted rentals
+            "DurationMinutes": [9.0] * len(route_codes),
+        }
+    ).to_csv(routes, index=False)
+    out = tmp_path / "out"
+    out.mkdir()
+    _write_osm(
+        out,
+        [
+            {"way_id": 101, "highway": "cycleway", "name": "Ride", "edge_class": "cycle_infra", "in_bike_graph": True,
+             "geometry": LineString([(ORIGIN_X - 50, ORIGIN_Y), (ORIGIN_X + 450, ORIGIN_Y)])},
+            {"way_id": 202, "highway": "footway", "name": "", "edge_class": "not_bikeable", "in_bike_graph": False,
+             "geometry": LineString([(ORIGIN_X - 50, ORIGIN_Y + 100), (ORIGIN_X + 450, ORIGIN_Y + 100)])},
+        ],
+    )
+
+    summary = build(locations, out, SETTINGS, routes_file=routes)
+
+    ways = {
+        feature["properties"]["way_id"]: feature["properties"]
+        for feature in json.loads((out / "gps_ways.geojson").read_text())["features"]
+    }
+    assert set(ways) == {101, 202}
+    assert ways[202]["in_bike_graph"] is False
+    assert ways[202]["trips"] == 12  # 14 riders minus the two aborted rentals
+    assert 0.5 < ways[202]["covered_share"] <= 1.0
+    assert summary["gps_layer"]["ridden_ways_missing_from_router_graph"] == 1
+    assert summary["router_graph_share_of_ridden_distance"]["other_osm_way"] == pytest.approx(0.5, abs=0.1)
+    assert (out / "edges.geojson").exists()  # kept for comparison with the first run
+
+    gps_ways = load_gps_ways(out / "gps_ways.geojson")
+    assert edge_gps_trips({"osmid": [999, 202]}, gps_ways) == 12
+    assert edge_gps_trips({"osmid": 999}, gps_ways) is None
+
+
+@pytest.mark.parametrize(
+    ("osmid", "expected"),
+    [(5, [5]), ([5, 6], [5, 6]), ("[5, 6]", [5, 6]), ("7", [7]), (None, [])],
+)
+def test_way_ids_accepts_every_osmnx_osmid_form(osmid, expected):
+    assert way_ids(osmid) == expected

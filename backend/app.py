@@ -32,6 +32,7 @@ COVERAGE_DIR = ROOT_DIR / "cache" / "gps_coverage"
 COVERAGE_FILES = {
     "cells": "cells.geojson",
     "edges": "edges.geojson",
+    "ways": "gps_ways.geojson",
     "candidates": "candidates.geojson",
     "summary": "summary.json",
 }
