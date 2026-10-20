@@ -17,8 +17,12 @@
 
         <h2>1 · Cycle paths according to OSM</h2>
         <label class="layer-toggle">
-          <input type="checkbox" data-layers="osm-cycleways" />
-          <span class="swatch dashed"></span><span>OSM cycle infrastructure</span><span class="value" id="cycleways-km"></span>
+          <input type="checkbox" data-layers="cyc-separate-casing,cyc-separate" />
+          <span class="swatch line"></span><span>Separate cycleways and designated paths</span><span class="value" id="cyc-separate-km"></span>
+        </label>
+        <label class="layer-toggle">
+          <input type="checkbox" data-layers="cyc-on_road-casing,cyc-on_road" />
+          <span class="swatch line dashed"></span><span>Cycle lanes and tracks on roads</span><span class="value" id="cyc-on_road-km"></span>
         </label>
 
         <h2>2 · Where riders actually go (GPS)</h2>

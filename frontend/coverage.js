@@ -89,8 +89,12 @@ function renderSummary(summary, cycleways, ways) {
     document.querySelector(`#gap-${name}`).textContent =
       `${groups[name].ridden_km} km · ${percent(groups[name].share_of_gap_trip_km)}`;
   }
-  const cyclewayKm = cycleways.features.reduce((sum, feature) => sum + lineLength(feature.geometry), 0);
-  document.querySelector("#cycleways-km").textContent = `${Math.round(cyclewayKm)} km`;
+  for (const kind of ["separate", "on_road"]) {
+    const km = cycleways.features
+      .filter((feature) => feature.properties.infra_kind === kind)
+      .reduce((sum, feature) => sum + lineLength(feature.geometry), 0);
+    document.querySelector(`#cyc-${kind}-km`).textContent = `${Math.round(km)} km`;
+  }
   document.querySelector("#ridden-count").textContent = `${ways.features.length.toLocaleString()} ways`;
 }
 
@@ -214,15 +218,33 @@ function addLayers({ cells, edges, ways, cycleways, candidates }) {
     paint: { "line-color": wayScale.color, "line-width": wayScale.width(0) },
   });
 
-  // 1 · OSM cycle paths, a dashed reference line above the GPS colours.
+  // 1 · OSM cycle infrastructure, styled like a cycle map: dark ink with a
+  // white casing so it reads above the GPS colours; lanes on roads dashed.
   map.addSource("cycleways", { type: "geojson", data: cycleways });
-  map.addLayer({
-    id: "osm-cycleways",
-    type: "line",
-    source: "cycleways",
-    layout: { visibility: "none" },
-    paint: { "line-color": "#0b0b0b", "line-width": 1.5, "line-dasharray": [2, 1.5], "line-opacity": 0.85 },
-  });
+  const lineWidth = (base) => ["interpolate", ["linear"], ["zoom"], 12, base, 16, base * 2];
+  for (const kind of ["separate", "on_road"]) {
+    const filter = ["==", ["get", "infra_kind"], kind];
+    map.addLayer({
+      id: `cyc-${kind}-casing`,
+      type: "line",
+      source: "cycleways",
+      filter,
+      layout: { visibility: "none", "line-cap": "round" },
+      paint: { "line-color": "#ffffff", "line-width": lineWidth(4) },
+    });
+    map.addLayer({
+      id: `cyc-${kind}`,
+      type: "line",
+      source: "cycleways",
+      filter,
+      layout: { visibility: "none", ...(kind === "separate" ? { "line-cap": "round" } : {}) },
+      paint: {
+        "line-color": "#172033",
+        "line-width": lineWidth(2),
+        ...(kind === "on_road" ? { "line-dasharray": [2, 1.5] } : {}),
+      },
+    });
+  }
 
   // 3 · Gaps, drawn on top; least valuable group lowest.
   for (const name of ["alongside", "partly", "separate"]) {
@@ -265,7 +287,10 @@ function hoverText(feature) {
   const { properties } = feature;
   const id = feature.layer.id;
   if (id === "gps-ways" || id.startsWith("gap-")) return wayText(properties);
-  if (id === "osm-cycleways") return `${wayName(properties)}<br />OSM cycle infrastructure`;
+  if (id.startsWith("cyc-")) {
+    const kind = properties.infra_kind === "separate" ? "Separate cycleway / designated path" : "Cycle lane or track on a road";
+    return `${wayName(properties)} (${properties.highway})<br />OSM: ${kind}`;
+  }
   if (id === "edges") {
     return `${wayName(properties)}<br />${properties.trips} trips · ${properties.edge_class.replace("_", " ")}`;
   }
@@ -274,7 +299,7 @@ function hoverText(feature) {
 }
 
 function addHover() {
-  const layers = ["candidates-fill", "cells", "edges", "gps-ways", "osm-cycleways", "gap-alongside", "gap-partly", "gap-separate"];
+  const layers = ["candidates-fill", "cells", "edges", "gps-ways", "cyc-separate", "cyc-on_road", "gap-alongside", "gap-partly", "gap-separate"];
   for (const layer of layers) {
     map.on("mousemove", layer, (event) => {
       map.getCanvas().style.cursor = "pointer";

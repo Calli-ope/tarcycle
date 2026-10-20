@@ -566,6 +566,20 @@ def edge_usage(
     return used.sort_values("trips")
 
 
+OFF_ROAD_HIGHWAYS = {"cycleway", "path", "footway", "pedestrian", "track", "bridleway", "steps"}
+
+
+def infra_kind(highway: str) -> str:
+    """``separate`` for cycleways and designated paths, ``on_road`` for lanes on roads.
+
+    ``highway`` is the comma-joined value stored in ``osm_edges.gpkg``. A road
+    only counts as cycle infrastructure through a cycle lane/track tag (or
+    ``bicycle=designated``), so infrastructure on a road highway is on-road.
+    """
+
+    return "separate" if set(highway.split(",")) & OFF_ROAD_HIGHWAYS else "on_road"
+
+
 def gap_group(alongside_share: float) -> str:
     """How much a ridden way outside the router graph adds to it.
 
@@ -680,7 +694,8 @@ def write_routing_layers(
 
     ways = way_usage(busy, edges, settings)
     _write_geojson(ways, output_dir / "gps_ways.geojson")
-    cycleways = edges[edges["edge_class"] == "cycle_infra"][["way_id", "highway", "name", "geometry"]]
+    cycleways = edges[edges["edge_class"] == "cycle_infra"][["way_id", "highway", "name", "geometry"]].copy()
+    cycleways["infra_kind"] = [infra_kind(value) for value in cycleways["highway"]]
     _write_geojson(cycleways, output_dir / "osm_cycleways.geojson")
     return summarise_ways(ways)
 

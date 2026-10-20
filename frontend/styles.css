@@ -196,10 +196,14 @@ button {
   margin: 0;
 }
 
-.swatch.dashed {
+.swatch.line {
   height: 0;
-  border-top: 2px dashed #0b0b0b;
+  border-top: 3px solid #172033;
   border-radius: 0;
+}
+
+.swatch.dashed {
+  border-top-style: dashed;
 }
 
 .older {

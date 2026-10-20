@@ -20,6 +20,7 @@ from backend.gps_coverage import (
     densify_tracks,
     alongside_share,
     gap_group,
+    infra_kind,
     in_osmnx_bike_network,
     rebuild_from_cache,
     valid_route_codes,
@@ -321,3 +322,12 @@ def test_alongside_share_measures_parallel_sidewalks():
     shares = alongside_share(np.array([sidewalk, park_path, half]), road, 25.0)
     # The corridor reaches sqrt(25² - 10²) ≈ 22.9 m past the road's end: (200 + 22.9) / 400.
     np.testing.assert_allclose(shares, [1.0, 0.0, 222.9 / 400], atol=0.01)
+
+
+@pytest.mark.parametrize(
+    ("highway", "kind"),
+    [("cycleway", "separate"), ("footway", "separate"), ("path", "separate"),
+     ("secondary", "on_road"), ("residential", "on_road"), ("cycleway,residential", "separate")],
+)
+def test_infra_kind(highway, kind):
+    assert infra_kind(highway) == kind
