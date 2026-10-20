@@ -44,10 +44,18 @@ riverside preference.
 Major roads near mapped water are also penalised so the router will cross to a
 connected riverside cycleway instead of following a parallel arterial road.
 
-The current route is a custom shortest path, not a guaranteed globally
-optimal cycling route. It prefers dedicated cycleways, cycleway tags on roads,
-paths, and tracks, while penalising major roads and cobblestones. Better
-elevation, traffic, and GPS-derived preferences require additional data.
-NetworkX A* is used instead of an uninformed shortest-path search; the
-heuristic is a conservative geographic lower bound, so it improves search
-speed without changing the weighted-route objective.
+The route search uses exact Dijkstra shortest paths. It first finds the
+shortest viable route by physical length, then prefers the
+dedicated-cycleway-heavy alternative when it is no more than 20% longer than
+that baseline. Within that constraint it also penalises major roads,
+cobblestones, elevation, and unnecessary facility transitions. The detour
+limit is configurable through `RoutingPreferences.maximum_detour_factor`.
+This is a constrained preference search, rather than an exhaustive
+enumeration of every possible route. Better traffic and GPS-derived
+preferences require additional data.
+
+Routing factors must remain non-negative because Dijkstra's algorithm requires
+non-negative edge costs. A factor of `0.05` makes a dedicated cycleway twenty
+times more attractive than an ordinary road of the same length without
+introducing invalid negative weights. Negative factors can create negative
+cycles and invalidate shortest-path results.

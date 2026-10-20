@@ -20,6 +20,18 @@ def _has_any(value: str, options: tuple[str, ...]) -> bool:
     return any(option in value for option in options)
 
 
+def _facility_type(attributes: dict[str, Any]) -> str:
+    highway = _as_text(attributes.get("highway"))
+    cycleway = _as_text(attributes.get("cycleway"))
+    if "cycleway" in highway:
+        return "dedicated_cycleway"
+    if _has_any(cycleway, ("track", "lane", "shared")):
+        return "road_cycleway"
+    if _has_any(highway, ("path", "track", "pedestrian")):
+        return "path"
+    return "road"
+
+
 def _is_true(value: Any) -> bool:
     return value is True or str(value).lower() == "true"
 
@@ -28,6 +40,41 @@ def _edge_attributes(data: dict[Any, Any]) -> Iterable[dict[str, Any]]:
     if "length" in data:
         return (data,)
     return (item for item in data.values() if isinstance(item, dict))
+
+
+def _line_edge_data(
+    graph: nx.MultiDiGraph,
+    edge: tuple[Any, Any, Any],
+) -> dict[str, Any]:
+    return graph.get_edge_data(edge[0], edge[1])[edge[2]]
+
+
+def _edge_length(graph: nx.MultiDiGraph, edge: tuple[Any, Any, Any]) -> float:
+    return float(_line_edge_data(graph, edge).get("length", 1.0))
+
+
+def _route_length(
+    graph: nx.MultiDiGraph,
+    edge_route: list[tuple[Any, Any, Any]],
+    start_distance: float,
+    end_distance: float,
+) -> float:
+    return (
+        start_distance
+        + end_distance
+        + sum(_edge_length(graph, edge) for edge in edge_route)
+    )
+
+
+def _dedicated_cycleway_length(
+    graph: nx.MultiDiGraph,
+    edge_route: list[tuple[Any, Any, Any]],
+) -> float:
+    return sum(
+        _edge_length(graph, edge)
+        for edge in edge_route
+        if _facility_type(_line_edge_data(graph, edge)) == "dedicated_cycleway"
+    )
 
 
 def _distance_meters(graph: nx.MultiDiGraph, start: Any, end: Any) -> float:
@@ -106,7 +153,7 @@ def edge_cost(
         cycleway = _as_text(attributes.get("cycleway"))
         factor = 1.0
         if "cycleway" in highway:
-            factor *= preferences.cycleway_factor
+            factor *= preferences.dedicated_cycleway_factor
         elif _has_any(cycleway, ("track", "lane", "shared")):
             factor *= preferences.cycleway_factor
         elif _has_any(highway, ("path", "track", "pedestrian")):
@@ -132,6 +179,16 @@ def edge_cost(
     if not costs:
         raise ValueError("OSM edge has no usable attributes.")
     return min(costs)
+
+
+def _transition_cost(
+    previous: dict[str, Any],
+    current: dict[str, Any],
+    preferences: RoutingPreferences,
+) -> float:
+    if _facility_type(previous) == _facility_type(current):
+        return 0.0
+    return preferences.facility_transition_cost
 
 
 def _best_edge(
@@ -166,65 +223,203 @@ class NetworkXRouter:
         preferences: RoutingPreferences | None = None,
     ) -> dict[str, Any]:
         preferences = preferences or RoutingPreferences()
-        minimum_factor = min(
-            preferences.cycleway_factor,
-            preferences.path_factor,
-            1.0,
-        )
-        weight = lambda u, v, data: edge_cost(u, v, data, preferences)
-        heuristic = lambda node, target: (
-            _distance_meters(self.graph, node, target) * minimum_factor
-        )
+        line_graph = nx.line_graph(self.graph)
         start_candidates = _endpoint_candidates(self.graph, start_lat, start_lon)
         end_candidates = _endpoint_candidates(self.graph, end_lat, end_lon)
-        best = None
+        source_target_pairs = []
+        shortest_route_length = float("inf")
+        shortest_baseline = None
         for origin, start_snap_distance, start_connector in start_candidates:
             for destination, end_snap_distance, end_connector in end_candidates:
-                try:
-                    candidate = nx.astar_path(
-                        self.graph,
+                source_edges = [
+                    edge for edge in line_graph.nodes if edge[0] == origin
+                ]
+                target_edges = [
+                    edge for edge in line_graph.nodes if edge[1] == destination
+                ]
+                source_target_pairs.append(
+                    (
                         origin,
                         destination,
-                        weight=weight,
-                        heuristic=heuristic,
-                    )
-                except nx.NetworkXNoPath:
-                    continue
-                route_cost = sum(
-                    edge_cost(
-                        start,
-                        end,
-                        self.graph.get_edge_data(start, end),
-                        preferences,
-                    )
-                    for start, end in zip(candidate, candidate[1:])
-                )
-                score = route_cost + start_snap_distance + end_snap_distance
-                if best is None or score < best[0]:
-                    best = (
-                        score,
-                        candidate,
                         start_snap_distance,
                         end_snap_distance,
                         start_connector,
                         end_connector,
+                        source_edges,
+                        target_edges,
                     )
+                )
+                for source_edge in source_edges:
+                    for target_edge in target_edges:
+                        try:
+                            edge_route = nx.shortest_path(
+                                line_graph,
+                                source_edge,
+                                target_edge,
+                                weight=lambda _previous, current, _data: (
+                                    _edge_length(self.graph, current)
+                                ),
+                                method="dijkstra",
+                            )
+                        except nx.NetworkXNoPath:
+                            continue
+                        route_length = _route_length(
+                            self.graph,
+                            edge_route,
+                            start_snap_distance,
+                            end_snap_distance,
+                        )
+                        if route_length < shortest_route_length:
+                            shortest_route_length = route_length
+                            shortest_baseline = (
+                                edge_route,
+                                start_snap_distance,
+                                end_snap_distance,
+                                start_connector,
+                                end_connector,
+                            )
+        if shortest_route_length == float("inf"):
+            raise nx.NetworkXNoPath
+
+        if shortest_baseline is None:
+            raise nx.NetworkXNoPath
+        baseline_edge_route, baseline_start_distance, baseline_end_distance, (
+            baseline_start_connector,
+            baseline_end_connector,
+        ) = (
+            shortest_baseline[0],
+            shortest_baseline[1],
+            shortest_baseline[2],
+            shortest_baseline[3:],
+        )
+        baseline_route = [baseline_edge_route[0][0]] + [
+            edge[1] for edge in baseline_edge_route
+        ]
+        baseline_dedicated_length = _dedicated_cycleway_length(
+            self.graph, baseline_edge_route
+        )
+        best = (
+            shortest_route_length,
+            baseline_route,
+            baseline_edge_route,
+            baseline_start_distance,
+            baseline_end_distance,
+            baseline_start_connector,
+            baseline_end_connector,
+            shortest_route_length,
+            baseline_dedicated_length,
+        )
+        best_key = (-baseline_dedicated_length, shortest_route_length)
+        fallback = None
+        for (
+            origin,
+            destination,
+            start_snap_distance,
+            end_snap_distance,
+            start_connector,
+            end_connector,
+            source_edges,
+            target_edges,
+        ) in source_target_pairs:
+            for source_edge in source_edges:
+                for target_edge in target_edges:
+                    try:
+                        edge_route = nx.shortest_path(
+                            line_graph,
+                            source_edge,
+                            target_edge,
+                            weight=lambda previous, current, _data: (
+                                edge_cost(
+                                    current[0],
+                                    current[1],
+                                    _line_edge_data(self.graph, current),
+                                    preferences,
+                                )
+                                + _transition_cost(
+                                    _line_edge_data(self.graph, previous),
+                                    _line_edge_data(self.graph, current),
+                                    preferences,
+                                )
+                            ),
+                            method="dijkstra",
+                        )
+                    except nx.NetworkXNoPath:
+                        continue
+                    route_length = _route_length(
+                        self.graph,
+                        edge_route,
+                        start_snap_distance,
+                        end_snap_distance,
+                    )
+                    candidate = [source_edge[0]] + [
+                        edge[1] for edge in edge_route
+                    ]
+                    route_cost = edge_cost(
+                        source_edge[0],
+                        source_edge[1],
+                        _line_edge_data(self.graph, source_edge),
+                        preferences,
+                    ) + sum(
+                        edge_cost(
+                            edge[0],
+                            edge[1],
+                            _line_edge_data(self.graph, edge),
+                            preferences,
+                        )
+                        + _transition_cost(
+                            _line_edge_data(self.graph, previous),
+                            _line_edge_data(self.graph, edge),
+                            preferences,
+                        )
+                        for previous, edge in zip(edge_route, edge_route[1:])
+                    )
+                    score = route_cost + start_snap_distance + end_snap_distance
+                    dedicated_length = _dedicated_cycleway_length(
+                        self.graph, edge_route
+                    )
+                    result = (
+                        score,
+                        candidate,
+                        edge_route,
+                        start_snap_distance,
+                        end_snap_distance,
+                        start_connector,
+                        end_connector,
+                        route_length,
+                        dedicated_length,
+                    )
+                    if fallback is None or score < fallback[0]:
+                        fallback = result
+                    if route_length <= (
+                        shortest_route_length * preferences.maximum_detour_factor
+                    ) and (
+                        best_key is None
+                        or (-dedicated_length, score) < best_key
+                    ):
+                        best = result
+                        best_key = (-dedicated_length, score)
+        if best is None:
+            best = fallback
         if best is None:
             raise nx.NetworkXNoPath
         (
             _,
             route,
+            edge_route,
             start_snap_distance,
             end_snap_distance,
             start_connector,
             end_connector,
+            route_length,
+            dedicated_length,
         ) = best
         coordinates = []
         elevation_gain = 0.0
         maximum_grade = 0.0
         covered_edges = 0
-        for start, end in zip(route, route[1:]):
-            edge = _best_edge(self.graph, start, end, preferences)
+        for edge_state in edge_route:
+            start, end, _key = edge_state
+            edge = _line_edge_data(self.graph, edge_state)
             elevation_gain += float(edge.get("elevation_gain", 0.0))
             maximum_grade = max(
                 maximum_grade,
@@ -268,6 +463,15 @@ class NetworkXRouter:
                 ),
                 "start_snap_distance_m": round(start_snap_distance, 1),
                 "end_snap_distance_m": round(end_snap_distance, 1),
+                "route_length_m": round(route_length, 1),
+                "dedicated_cycleway_length_m": round(dedicated_length, 1),
+                "dedicated_cycleway_share": round(
+                    dedicated_length / max(1.0, route_length), 3
+                ),
+                "shortest_viable_route_length_m": round(
+                    shortest_route_length, 1
+                ),
+                "maximum_detour_factor": preferences.maximum_detour_factor,
             },
             "geometry": {"type": "LineString", "coordinates": coordinates},
         }
