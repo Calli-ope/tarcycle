@@ -1,0 +1,19 @@
+# Run the poller 24/7:  docker compose -f poller/compose.yaml up -d --build
+services:
+  poller:
+    build: .
+    image: tartu-bike-poller
+    # Start again after crashes and server reboots (unless stopped by hand).
+    restart: unless-stopped
+    volumes:
+      # Named volume: the database survives `docker compose down` and image rebuilds.
+      - poller-data:/data
+    logging:
+      # Keep container logs from filling the disk.
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  poller-data:
