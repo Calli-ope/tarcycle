@@ -4,3 +4,4 @@ cache/*
 node_modules/
 __pycache__/
 run.bat
+valhalla-data/*

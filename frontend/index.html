@@ -29,6 +29,11 @@
           <label for="to-address">Destination address</label>
           <input id="to-address" placeholder="e.g. Ülikooli 18" />
         </div>
+        <label>Router</label>
+        <div class="mode-switch" role="group" aria-label="Routing backend">
+          <button class="mode backend active" data-backend="networkx" type="button">NetworkX</button>
+          <button class="mode backend" data-backend="valhalla" type="button">Valhalla</button>
+        </div>
         <button id="route">Plan route</button>
         <p id="status" role="status"></p>
       </section>

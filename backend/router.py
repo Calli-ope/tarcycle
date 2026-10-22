@@ -1,13 +1,29 @@
 from __future__ import annotations
 
-from typing import Any, Iterable
+import heapq
+import math
+from itertools import count
+from typing import Any, Callable
 
 import networkx as nx
+import numpy as np
 import osmnx as ox
-from shapely.geometry import LineString, Point
+import shapely
+from shapely.geometry import Point
 from shapely.ops import substring
 
+from .graph import edge_line
 from .models import RoutingPreferences
+
+
+Edge = tuple[Any, Any, Any]
+CYCLEWAY_KEYS = ("cycleway", "cycleway:left", "cycleway:right", "cycleway:both")
+MAJOR_ROADS = ("primary", "secondary", "tertiary", "trunk")
+ROADSIDE_DISTANCE_M = 25.0
+# The alternative route is searched with the best route's edges this much more
+# expensive, and is dropped if it shares more than this share of its length.
+ALTERNATIVE_PENALTY = 3.0
+MAXIMUM_SHARED_SHARE = 0.7
 
 
 def _as_text(value: Any) -> str:
@@ -20,142 +36,249 @@ def _has_any(value: str, options: tuple[str, ...]) -> bool:
     return any(option in value for option in options)
 
 
-def _is_true(value: Any) -> bool:
-    return value is True or str(value).lower() == "true"
-
-
-def _edge_attributes(data: dict[Any, Any]) -> Iterable[dict[str, Any]]:
-    if "length" in data:
-        return (data,)
-    return (item for item in data.values() if isinstance(item, dict))
-
-
-def _distance_meters(graph: nx.MultiDiGraph, start: Any, end: Any) -> float:
-    return float(
-        ox.distance.great_circle(
-            graph.nodes[start]["y"],
-            graph.nodes[start]["x"],
-            graph.nodes[end]["y"],
-            graph.nodes[end]["x"],
-        )
-    )
-
-
-def _point_to_node_distance(
-    graph: nx.MultiDiGraph,
-    latitude: float,
-    longitude: float,
-    node: Any,
-) -> float:
-    return float(
-        ox.distance.great_circle(
-            latitude,
-            longitude,
-            graph.nodes[node]["y"],
-            graph.nodes[node]["x"],
-        )
-    )
-
-
-def _endpoint_candidates(
-    graph: nx.MultiDiGraph,
-    latitude: float,
-    longitude: float,
-) -> list[tuple[Any, float, list[tuple[float, float]]]]:
-    edge, _ = ox.distance.nearest_edges(
-        graph,
-        longitude,
-        latitude,
-        return_dist=True,
-    )
-    candidates = {edge[0], edge[1]}
-    edge_data = graph.get_edge_data(edge[0], edge[1])[edge[2]]
-    edge_geometry = edge_data.get("geometry")
-    point = Point(longitude, latitude)
-    result = []
-    for node in candidates:
-        if isinstance(edge_geometry, LineString):
-            position = edge_geometry.project(point)
-            if node == edge[0]:
-                connector = substring(edge_geometry, 0, position)
-                connector_points = list(connector.coords)[::-1]
-            else:
-                connector = substring(edge_geometry, position, edge_geometry.length)
-                connector_points = list(connector.coords)
-        else:
-            connector_points = [
-                (longitude, latitude),
-                (graph.nodes[node]["x"], graph.nodes[node]["y"]),
-            ]
-        distance = _point_to_node_distance(graph, latitude, longitude, node)
-        result.append((node, distance, connector_points))
-    return result
+def facility_type(attributes: dict[str, Any]) -> str:
+    highway = _as_text(attributes.get("highway"))
+    cycleway = ",".join(_as_text(attributes.get(key)) for key in CYCLEWAY_KEYS)
+    bicycle = _as_text(attributes.get("bicycle"))
+    if "cycleway" in highway or (
+        _has_any(highway, ("path", "footway")) and "designated" in bicycle
+    ):
+        return "dedicated_cycleway"
+    if _has_any(cycleway, ("track", "lane", "shared")):
+        return "road_cycleway"
+    if _has_any(highway, ("path", "track", "pedestrian", "footway")):
+        return "path"
+    return "road"
 
 
 def edge_cost(
-    _u: Any,
-    _v: Any,
-    data: dict[Any, Any],
+    attributes: dict[str, Any],
     preferences: RoutingPreferences,
+    facility: str | None = None,
+    sidewalk: bool = False,
 ) -> float:
-    costs = []
-    for attributes in _edge_attributes(data):
-        base_cost = float(attributes.get("length", 1.0))
-        highway = _as_text(attributes.get("highway"))
-        surface = _as_text(attributes.get("surface"))
-        cycleway = _as_text(attributes.get("cycleway"))
-        factor = 1.0
-        if "cycleway" in highway:
-            factor *= preferences.cycleway_factor
-        elif _has_any(cycleway, ("track", "lane", "shared")):
-            factor *= preferences.cycleway_factor
-        elif _has_any(highway, ("path", "track", "pedestrian")):
-            factor *= preferences.path_factor
-        if _is_true(attributes.get("near_water")) and _has_any(
-            highway, ("cycleway", "path", "track", "pedestrian")
-        ):
-            factor *= preferences.riverside_path_factor
-        if "cobblestone" in surface or "sett" in surface:
-            factor *= preferences.cobblestone_factor
-        is_major_road = _has_any(
-            highway, ("primary", "secondary", "tertiary", "trunk")
-        )
-        if is_major_road:
-            factor *= preferences.major_road_factor
-        if _is_true(attributes.get("near_water")) and is_major_road:
-            factor *= preferences.riverside_road_factor
-        if _has_any(highway, ("motorway",)):
-            factor = float("inf")
-        uphill_grade = float(attributes.get("average_uphill_grade", 0.0))
-        factor *= 1.0 + preferences.uphill_factor * uphill_grade
-        costs.append(base_cost * factor)
-    if not costs:
-        raise ValueError("OSM edge has no usable attributes.")
-    return min(costs)
-
-
-def _best_edge(
-    graph: nx.MultiDiGraph,
-    start: Any,
-    end: Any,
-    preferences: RoutingPreferences,
-) -> dict[str, Any]:
-    edges = graph.get_edge_data(start, end)
-    if not edges:
-        raise ValueError(f"Missing edge between {start} and {end}.")
-    return min(
-        edges.values(),
-        key=lambda data: edge_cost(start, end, data, preferences),
-    )
+    highway = _as_text(attributes.get("highway"))
+    if "motorway" in highway:
+        return math.inf
+    facility = facility or facility_type(attributes)
+    factor = {
+        "dedicated_cycleway": preferences.dedicated_cycleway_factor,
+        "road_cycleway": preferences.cycleway_factor,
+        "path": preferences.path_factor,
+        "road": 1.0,
+    }[facility]
+    if sidewalk:
+        factor = preferences.sidewalk_factor
+    if _has_any(_as_text(attributes.get("surface")), ("cobblestone", "sett")):
+        factor *= preferences.cobblestone_factor
+    if _has_any(highway, MAJOR_ROADS):
+        factor *= preferences.major_road_factor
+    uphill_grade = float(attributes.get("average_uphill_grade", 0.0))
+    factor *= 1.0 + preferences.uphill_factor * uphill_grade
+    return float(attributes["length"]) * factor
 
 
 class NetworkXRouter:
-    """Routing backend boundary; a ValhallaRouter can implement the same API."""
+    """Routing backend boundary; ValhallaRouter implements the same API."""
 
     backend_name = "networkx"
 
-    def __init__(self, graph: nx.MultiDiGraph) -> None:
+    def __init__(
+        self,
+        graph: nx.MultiDiGraph,
+        preferences: RoutingPreferences | None = None,
+    ) -> None:
         self.graph = graph
+        self.preferences = preferences or RoutingPreferences()
+        self.edges: list[Edge] = list(graph.edges(keys=True))
+        self.lines = {
+            edge: edge_line(graph, edge[0], edge[1], graph.edges[edge])
+            for edge in self.edges
+        }
+        self.length = {edge: float(graph.edges[edge]["length"]) for edge in self.edges}
+        # Lookups in roughly metric space (1° lon ≈ cos(lat) · 1° lat).
+        latitude = sum(y for _, y in graph.nodes(data="y")) / len(graph)
+        self.x_scale = math.cos(math.radians(latitude))
+        self.tree = shapely.STRtree(
+            [self._scaled(self.lines[edge]) for edge in self.edges]
+        )
+        self.facility = {edge: facility_type(graph.edges[edge]) for edge in self.edges}
+        highway = {edge: _as_text(graph.edges[edge].get("highway")) for edge in self.edges}
+        roads = [
+            edge
+            for edge in self.edges
+            if self.facility[edge] == "road" and "service" not in highway[edge]
+        ]
+        # Cycle tracks beside a major road expose riders to the same traffic as
+        # a painted lane, so they are priced like one.
+        cycleways = [e for e in self.edges if self.facility[e] == "dedicated_cycleway"]
+        major = [edge for edge in roads if _has_any(highway[edge], MAJOR_ROADS)]
+        for edge in self._beside(cycleways, major):
+            self.facility[edge] = "road_cycleway"
+        # Footways without explicit bicycle access: beside a road they are
+        # sidewalks; elsewhere (parks, riverside) ordinary paths.
+        footways = [
+            edge
+            for edge in self.edges
+            if self.facility[edge] == "path"
+            and "footway" in highway[edge]
+            and not _has_any(
+                _as_text(graph.edges[edge].get("bicycle")), ("yes", "permissive")
+            )
+        ]
+        sidewalks = set(self._beside(footways, roads))
+        self.cost = {
+            edge: edge_cost(
+                graph.edges[edge],
+                self.preferences,
+                self.facility[edge],
+                edge in sidewalks,
+            )
+            for edge in self.edges
+        }
+        self.successors = {
+            node: list(graph.out_edges(node, keys=True)) for node in graph
+        }
+        # A* lower bound: straight-line metres times the cheapest cost per metre
+        # (slightly reduced, as positions use a flat-earth approximation).
+        self.position = {
+            node: (data["x"] * self.x_scale * 111_320, data["y"] * 111_320)
+            for node, data in graph.nodes(data=True)
+        }
+        self.minimum_factor = 0.98 * min(
+            self.cost[edge] / self.length[edge]
+            for edge in self.edges
+            if self.length[edge] > 0
+        )
+
+    def _scaled(self, geometry):
+        return shapely.transform(geometry, lambda coords: coords * [self.x_scale, 1])
+
+    def _beside(self, edges: list[Edge], roads: list[Edge]) -> list[Edge]:
+        """Edges whose quarter, middle and three-quarter points all lie within
+        ROADSIDE_DISTANCE_M of one of the roads."""
+
+        tree = shapely.STRtree([self._scaled(self.lines[edge]) for edge in roads])
+        lines = self._scaled(np.array([self.lines[edge] for edge in edges]))
+        points = shapely.line_interpolate_point(
+            lines[:, None], [0.25, 0.5, 0.75], normalized=True
+        )
+        near = np.zeros(points.size, dtype=bool)
+        near[
+            tree.query(
+                points.ravel(),
+                predicate="dwithin",
+                distance=ROADSIDE_DISTANCE_M / 111_320,
+            )[0]
+        ] = True
+        return [
+            edge
+            for edge, beside_road in zip(edges, near.reshape(points.shape).all(axis=1))
+            if beside_road
+        ]
+
+    def _snap(self, latitude: float, longitude: float):
+        """Map both ends of the nearest edge to (distance, connector from point)."""
+
+        point = Point(longitude, latitude)
+        edge = self.edges[int(self.tree.query_nearest(self._scaled(point))[0])]
+        line = self.lines[edge]
+        position = line.project(point)
+        connectors = {
+            edge[0]: list(substring(line, 0, position).coords)[::-1],
+            edge[1]: list(substring(line, position, line.length).coords),
+        }
+        return {
+            node: (
+                float(
+                    ox.distance.great_circle(
+                        latitude,
+                        longitude,
+                        self.graph.nodes[node]["y"],
+                        self.graph.nodes[node]["x"],
+                    )
+                ),
+                connector,
+            )
+            for node, connector in connectors.items()
+        }
+
+    def _preferred_weight(self, previous: Edge | None, edge: Edge) -> float:
+        transition = (
+            self.preferences.facility_transition_cost
+            if previous is not None and self.facility[previous] != self.facility[edge]
+            else 0.0
+        )
+        return self.cost[edge] + transition
+
+    def _search(
+        self,
+        starts: dict[Any, float],
+        ends: dict[Any, float],
+        weight: Callable[[Edge | None, Edge], float],
+        factor: float,
+    ) -> tuple[list[Edge], Any, Any]:
+        """A* over edges rather than nodes, so turns between facility types can
+        be priced. Start/end offsets act as virtual endpoints. `factor` must not
+        exceed the weight per metre of any edge, so the result stays optimal."""
+
+        targets = [(self.position[node], offset) for node, offset in ends.items()]
+        estimates: dict[Any, float] = {}
+
+        def estimate(node) -> float:
+            if node not in estimates:
+                x, y = self.position[node]
+                estimates[node] = min(
+                    factor * math.hypot(x - target_x, y - target_y) + offset
+                    for (target_x, target_y), offset in targets
+                )
+            return estimates[node]
+
+        tie = count()
+        heap = []
+        for node, offset in starts.items():
+            for edge in self.successors[node]:
+                distance = offset + weight(None, edge)
+                heap.append((distance + estimate(edge[1]), next(tie), edge, None, distance))
+        # A None edge marks reaching the destination; its last item is (last edge, node).
+        for node in starts.keys() & ends.keys():
+            distance = starts[node] + ends[node]
+            heap.append((distance, next(tie), None, (None, node), distance))
+        heapq.heapify(heap)
+        previous: dict[Edge, Edge | None] = {}
+        while heap:
+            _, _, edge, before, distance = heapq.heappop(heap)
+            if edge is None:
+                last, end = before
+                route = []
+                while last is not None:
+                    route.append(last)
+                    last = previous[last]
+                route.reverse()
+                return route, route[0][0] if route else end, end
+            if edge in previous:
+                continue
+            previous[edge] = before
+            head = edge[1]
+            if head in ends:
+                total = distance + ends[head]
+                heapq.heappush(heap, (total, next(tie), None, (edge, head), total))
+            for following in self.successors[head]:
+                if following not in previous:
+                    step = weight(edge, following)
+                    if step < math.inf:
+                        total = distance + step
+                        heapq.heappush(
+                            heap,
+                            (
+                                total + estimate(following[1]),
+                                next(tie),
+                                following,
+                                edge,
+                                total,
+                            ),
+                        )
+        raise nx.NetworkXNoPath
 
     def route_geojson(
         self,
@@ -163,111 +286,100 @@ class NetworkXRouter:
         start_lon: float,
         end_lat: float,
         end_lon: float,
-        preferences: RoutingPreferences | None = None,
     ) -> dict[str, Any]:
-        preferences = preferences or RoutingPreferences()
-        minimum_factor = min(
-            preferences.cycleway_factor,
-            preferences.path_factor,
-            1.0,
-        )
-        weight = lambda u, v, data: edge_cost(u, v, data, preferences)
-        heuristic = lambda node, target: (
-            _distance_meters(self.graph, node, target) * minimum_factor
-        )
-        start_candidates = _endpoint_candidates(self.graph, start_lat, start_lon)
-        end_candidates = _endpoint_candidates(self.graph, end_lat, end_lon)
-        best = None
-        for origin, start_snap_distance, start_connector in start_candidates:
-            for destination, end_snap_distance, end_connector in end_candidates:
-                try:
-                    candidate = nx.astar_path(
-                        self.graph,
-                        origin,
-                        destination,
-                        weight=weight,
-                        heuristic=heuristic,
-                    )
-                except nx.NetworkXNoPath:
-                    continue
-                route_cost = sum(
-                    edge_cost(
-                        start,
-                        end,
-                        self.graph.get_edge_data(start, end),
-                        preferences,
-                    )
-                    for start, end in zip(candidate, candidate[1:])
-                )
-                score = route_cost + start_snap_distance + end_snap_distance
-                if best is None or score < best[0]:
-                    best = (
-                        score,
-                        candidate,
-                        start_snap_distance,
-                        end_snap_distance,
-                        start_connector,
-                        end_connector,
-                    )
-        if best is None:
-            raise nx.NetworkXNoPath
-        (
-            _,
-            route,
-            start_snap_distance,
-            end_snap_distance,
-            start_connector,
-            end_connector,
-        ) = best
-        coordinates = []
-        elevation_gain = 0.0
-        maximum_grade = 0.0
-        covered_edges = 0
-        for start, end in zip(route, route[1:]):
-            edge = _best_edge(self.graph, start, end, preferences)
-            elevation_gain += float(edge.get("elevation_gain", 0.0))
-            maximum_grade = max(
-                maximum_grade,
-                float(edge.get("average_uphill_grade", 0.0)),
+        """Best route first, then a clearly different alternative if one exists."""
+
+        starts = self._snap(start_lat, start_lon)
+        ends = self._snap(end_lat, end_lon)
+        start_offsets = {node: value[0] for node, value in starts.items()}
+        end_offsets = {node: value[0] for node, value in ends.items()}
+
+        def total_length(result) -> float:
+            route, start, end = result
+            return (
+                start_offsets[start]
+                + end_offsets[end]
+                + sum(self.length[edge] for edge in route)
             )
-            covered_edges += int(float(edge.get("terrain_covered", 0.0)))
-            geometry = edge.get("geometry")
-            if isinstance(geometry, LineString):
-                points = list(geometry.coords)
-            else:
-                points = [
-                    (self.graph.nodes[start]["x"], self.graph.nodes[start]["y"]),
-                    (self.graph.nodes[end]["x"], self.graph.nodes[end]["y"]),
-                ]
-            if coordinates and coordinates[-1] == [float(value) for value in points[0]]:
-                points = points[1:]
-            coordinates.extend([[float(x), float(y)] for x, y in points])
-        connector_start = [
-            [float(x), float(y)] for x, y in start_connector
-        ]
-        connector_end = [
-            [float(x), float(y)] for x, y in reversed(end_connector)
-        ]
-        coordinates = (
-            [[start_lon, start_lat]]
-            + connector_start
-            + coordinates
-            + connector_end
-            + [[end_lon, end_lat]]
+
+        shortest = self._search(
+            start_offsets, end_offsets, lambda _previous, edge: self.length[edge], 0.98
         )
+        preferred = self._search(
+            start_offsets, end_offsets, self._preferred_weight, self.minimum_factor
+        )
+        shortest_length = total_length(shortest)
+        maximum_length = shortest_length * self.preferences.maximum_detour_factor
+        best = preferred if total_length(preferred) <= maximum_length else shortest
+        routes = [best]
+        # Alternative: the cheapest route once the best one's edges cost more.
+        used = set(best[0])
+        alternative = self._search(
+            start_offsets,
+            end_offsets,
+            lambda previous, edge: self._preferred_weight(previous, edge)
+            * (ALTERNATIVE_PENALTY if edge in used else 1.0),
+            self.minimum_factor,
+        )
+        shared = sum(self.length[edge] for edge in alternative[0] if edge in used)
+        alternative_length = total_length(alternative)
+        if (
+            alternative_length <= maximum_length
+            and shared <= MAXIMUM_SHARED_SHARE * alternative_length
+        ):
+            routes.append(alternative)
+
+        def feature(result) -> dict[str, Any]:
+            route, start, end = result
+            route_length = total_length(result)
+            coordinates = [(start_lon, start_lat), *starts[start][1]]
+            for edge in route:
+                coordinates.extend(self.lines[edge].coords)
+            coordinates.extend([*reversed(ends[end][1]), (end_lon, end_lat)])
+            coordinates = [
+                [float(x), float(y)]
+                for index, (x, y) in enumerate(coordinates)
+                if index == 0 or (x, y) != coordinates[index - 1]
+            ]
+            data = [self.graph.edges[edge] for edge in route]
+            dedicated_length = sum(
+                self.length[edge]
+                for edge in route
+                if self.facility[edge] == "dedicated_cycleway"
+            )
+            return {
+                "type": "Feature",
+                "properties": {
+                    "backend": self.backend_name,
+                    "node_count": len(route) + 1,
+                    "route_length_m": round(route_length, 1),
+                    "elevation_gain_m": round(
+                        sum(float(item.get("elevation_gain", 0.0)) for item in data),
+                        1,
+                    ),
+                    "maximum_uphill_grade": round(
+                        max(
+                            (
+                                float(item.get("average_uphill_grade", 0.0))
+                                for item in data
+                            ),
+                            default=0.0,
+                        ),
+                        4,
+                    ),
+                    "start_snap_distance_m": round(start_offsets[start], 1),
+                    "end_snap_distance_m": round(end_offsets[end], 1),
+                    "dedicated_cycleway_length_m": round(dedicated_length, 1),
+                    "dedicated_cycleway_share": round(
+                        dedicated_length / max(1.0, route_length), 3
+                    ),
+                    "shortest_viable_route_length_m": round(shortest_length, 1),
+                    "maximum_detour_factor": self.preferences.maximum_detour_factor,
+                },
+                "geometry": {"type": "LineString", "coordinates": coordinates},
+            }
+
         return {
-            "type": "Feature",
-            "properties": {
-                "backend": self.backend_name,
-                "node_count": len(route),
-                "elevation_gain_m": round(elevation_gain, 1),
-                "maximum_uphill_grade": round(maximum_grade, 4),
-                "terrain_coverage": round(
-                    covered_edges / max(1, len(route) - 1),
-                    3,
-                ),
-                "start_snap_distance_m": round(start_snap_distance, 1),
-                "end_snap_distance_m": round(end_snap_distance, 1),
-            },
-            "geometry": {"type": "LineString", "coordinates": coordinates},
+            "type": "FeatureCollection",
+            "features": [feature(result) for result in routes],
         }
