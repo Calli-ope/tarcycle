@@ -1,0 +1,22 @@
+# Optional Valhalla routing server: `docker compose up -d`, then start the app
+# with TARCYCLE_VALHALLA_URL=http://127.0.0.1:8002 (see README).
+services:
+  valhalla:
+    image: ghcr.io/valhalla/valhalla-scripted:latest
+    container_name: tarcycle-valhalla
+    ports:
+      - "8002:8002"
+    volumes:
+      - ./valhalla-data:/custom_files
+    environment:
+      # Downloaded only when valhalla-data/ contains no .pbf yet.
+      tile_urls: https://download.geofabrik.de/europe/estonia-latest.osm.pbf
+      # Reuse the built tiles on every start. To rebuild after replacing the
+      # .pbf, delete valhalla-data/valhalla_tiles.tar and valhalla_tiles/.
+      use_tiles_ignore_pbf: "True"
+      force_rebuild: "False"
+      # "True" makes use_hills work; costs one full rebuild plus an elevation download.
+      build_elevation: "False"
+      build_admins: "True"
+      build_time_zones: "True"
+      server_threads: "4"
