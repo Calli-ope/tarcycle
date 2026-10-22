@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Riders vs OSM</title>
+    <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="map-shell">
+      <div id="map" aria-label="Map of GPS bike traces compared with OpenStreetMap"></div>
+      <section class="controls coverage-panel" aria-label="GPS coverage">
+        <a class="back-link" href="./index.html">← Route planner</a>
+        <h1>Riders vs OSM</h1>
+        <p class="subtitle">Where Smart Bike riders go in 2025, compared with OpenStreetMap and the router's graph.</p>
+
+        <h2>1 · Router graph: ways the engine can use</h2>
+        <label class="layer-toggle">
+          <input type="checkbox" data-layers="router" />
+          <span class="swatch line"></span><span>osmnx "bike" network: roads, cycleways, paths (no footways)</span><span class="value" id="router-km"></span>
+        </label>
+
+        <h2>2 · Where riders actually go (GPS)</h2>
+        <label class="layer-toggle">
+          <input type="checkbox" data-layers="gps-ways" checked />
+          <span class="swatch" style="background: #2a78d6"></span><span>All ridden ways: cycleways, roads, footways</span><span class="value" id="ridden-count"></span>
+        </label>
+        <div class="ramp-legend">
+          <p class="ramp-title">Smart Bike trips in 2025 per way</p>
+          <div class="ramp"></div>
+          <div class="ramp-labels"><span>10</span><span id="ramp-max"></span></div>
+        </div>
+
+        <h2>3 · Gaps: ridden ways the router can't use</h2>
+        <label class="layer-toggle">
+          <input type="checkbox" data-layers="gap-separate,gap-partly" data-group="separate,partly" checked />
+          <span class="swatch" style="background: #1baf7a"></span><span>Gaps GPS covers: paths away from router ways (park, riverside, shortcut)</span><span class="value" id="gap-covered"></span>
+        </label>
+        <label class="layer-toggle">
+          <input type="checkbox" data-layers="gap-alongside" data-group="alongside" checked />
+          <span class="swatch" style="background: #898781"></span><span>Alongside a router way (sidewalks)</span><span class="value" id="gap-alongside"></span>
+        </label>
+
+        <h2>Busiest gaps shown</h2>
+        <ol id="gap-list" class="candidate-list"></ol>
+
+        <details class="older">
+          <summary>First analysis (for comparison)</summary>
+          <label class="layer-toggle">
+            <input type="checkbox" data-layers="edges" />
+            <span class="swatch" style="background: #1c5cab"></span><span>Use of OSM ways, per edge</span><span></span>
+          </label>
+          <label class="layer-toggle">
+            <input type="checkbox" data-layers="cells" id="toggle-cells" />
+            <span class="swatch" style="background: #898781"></span><span>Grid cells by class</span><span></span>
+          </label>
+          <div id="cells-legend" hidden>
+            <div id="share-bar" class="share-bar" role="img"></div>
+            <ul id="class-legend" class="legend"></ul>
+          </div>
+          <label class="layer-toggle">
+            <input type="checkbox" data-layers="candidates-fill,candidates-line" />
+            <span class="swatch" style="background: #eb6834"></span><span>Candidate zones</span><span></span>
+          </label>
+        </details>
+        <p id="status" role="status"></p>
+      </section>
+    </main>
+    <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+    <script src="./coverage.js"></script>
+  </body>
+</html>

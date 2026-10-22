@@ -10,8 +10,11 @@ from urllib.request import Request, urlopen
 import networkx as nx
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from .gps_layer import load_gps_ways
 from .graph import TERRAIN_DIR, GraphUnavailable, load_graph
 from .router import NetworkXRouter
 from .stations import load_stations
@@ -21,6 +24,16 @@ from .valhalla import ValhallaRouter, ValhallaUnavailable
 ROOT_DIR = Path(__file__).resolve().parent.parent
 STATIONS_FILE = ROOT_DIR / "data" / "Rattaparklad.csv"
 FRONTEND_DIR = ROOT_DIR / "frontend"
+COVERAGE_DIR = ROOT_DIR / "data" / "gps_coverage"
+COVERAGE_FILES = {
+    "cells": "cells.geojson",
+    "edges": "edges.geojson",
+    "ways": "gps_ways.geojson",
+    "cycleways": "osm_cycleways.geojson",
+    "router": "router_graph.geojson",
+    "candidates": "candidates.geojson",
+    "summary": "summary.json",
+}
 VALHALLA_URL = os.getenv("TARCYCLE_VALHALLA_URL", "http://127.0.0.1:8002")
 
 
@@ -35,7 +48,9 @@ def stations():
 
 @lru_cache(maxsize=1)
 def _networkx_router() -> NetworkXRouter:
-    return NetworkXRouter(load_graph())
+    gps_ways_file = COVERAGE_DIR / "gps_ways.geojson"
+    gps_ways = load_gps_ways(gps_ways_file) if gps_ways_file.exists() else None
+    return NetworkXRouter(load_graph(), gps_ways=gps_ways)
 
 
 def networkx_router() -> NetworkXRouter:
@@ -64,6 +79,8 @@ app.add_middleware(
     allow_methods=["GET"],
     allow_headers=["*"],
 )
+# Coverage GeoJSON layers are several MB; gzip shrinks them roughly tenfold.
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 
 @app.get("/api/health")
@@ -154,6 +171,23 @@ def station_route(
     return route(
         (start.latitude, start.longitude), (end.latitude, end.longitude), backend
     )
+
+
+@app.get("/api/coverage/{layer}")
+def coverage_layer(layer: str) -> FileResponse:
+    """Precomputed GPS-vs-OSM comparison layers from ``backend.gps_coverage``."""
+
+    filename = COVERAGE_FILES.get(layer)
+    if filename is None:
+        raise HTTPException(status_code=404, detail=f"Unknown coverage layer: {layer}")
+    path = COVERAGE_DIR / filename
+    if not path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="Coverage not built yet. Run: python -m backend.gps_coverage",
+        )
+    media_type = "application/json" if path.suffix == ".json" else "application/geo+json"
+    return FileResponse(path, media_type=media_type)
 
 
 app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")

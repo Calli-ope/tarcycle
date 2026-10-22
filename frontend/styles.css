@@ -87,3 +87,151 @@ button {
   color: #475569;
   font-size: 0.9rem;
 }
+
+.page-link,
+.back-link {
+  display: inline-block;
+  margin-top: 0.75rem;
+  color: #1d70f7;
+  font-size: 0.9rem;
+}
+
+.back-link {
+  margin: 0 0 0.5rem;
+}
+
+/* GPS coverage page */
+
+.coverage-panel {
+  max-height: calc(100vh - 2.5rem);
+  overflow-y: auto;
+}
+
+.coverage-panel h2 {
+  margin: 1.25rem 0 0.5rem;
+  font-size: 0.85rem;
+}
+
+.share-bar {
+  display: flex;
+  gap: 2px;
+  height: 0.75rem;
+}
+
+.share-bar span {
+  min-width: 2px;
+  border-radius: 4px;
+}
+
+.legend,
+.candidate-list {
+  margin: 0.75rem 0 1rem;
+  padding: 0;
+  list-style: none;
+  font-size: 0.85rem;
+}
+
+.legend li,
+.candidate {
+  display: grid;
+  grid-template-columns: 0.75rem 1fr auto;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.2rem 0;
+}
+
+.swatch {
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 50%;
+}
+
+.value {
+  color: #475569;
+  font-variant-numeric: tabular-nums;
+}
+
+.candidate {
+  min-height: 2rem;
+  margin: 0;
+  padding: 0.25rem 0.4rem;
+  color: inherit;
+  background: transparent;
+  font-weight: 400;
+  text-align: left;
+}
+
+.candidate:hover,
+.candidate:focus-visible {
+  background: #eff6ff;
+}
+
+.checkbox {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  font-weight: 400;
+}
+
+.checkbox input {
+  width: auto;
+  min-height: auto;
+  margin: 0;
+}
+
+.layer-toggle {
+  display: grid;
+  grid-template-columns: auto 0.75rem 1fr auto;
+  gap: 0.5rem;
+  align-items: center;
+  margin-top: 0.35rem;
+  font-size: 0.85rem;
+  font-weight: 400;
+  cursor: pointer;
+}
+
+.layer-toggle input {
+  width: auto;
+  min-height: auto;
+  margin: 0;
+}
+
+.swatch.line {
+  height: 0;
+  border-top: 3px solid #172033;
+  border-radius: 0;
+}
+
+.swatch.dashed {
+  border-top-style: dashed;
+}
+
+.older {
+  margin-top: 1rem;
+  font-size: 0.85rem;
+}
+
+.older summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.ramp-title {
+  margin: 0.75rem 0 0;
+  color: #475569;
+  font-size: 0.8rem;
+}
+
+.ramp {
+  height: 0.5rem;
+  margin-top: 0.25rem;
+  border-radius: 4px;
+  background: linear-gradient(to right, #86b6ef, #5598e7, #2a78d6, #1c5cab, #104281);
+}
+
+.ramp-labels {
+  display: flex;
+  justify-content: space-between;
+  color: #475569;
+  font-size: 0.8rem;
+}
