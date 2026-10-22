@@ -37,6 +37,8 @@ import shapely
 from pyproj import Transformer
 from shapely.geometry import MultiPoint, Polygon
 
+from .graph import load_graph
+
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_LOCATIONS_DIR = ROOT_DIR / "data" / "raw" / "Locations"
 DEFAULT_OUTPUT_DIR = ROOT_DIR / "data" / "gps_coverage"
@@ -73,11 +75,13 @@ NOT_BIKEABLE_HIGHWAYS = {
 }
 # osmnx's own bike-network filter (osmnx/_overpass.py, ``filters["bike"]``).
 # Overpass ``!~`` is an unanchored regex, so these match anywhere in a value.
-OSMNX_BIKE_EXCLUDED = {
+# Ways the router graph leaves out: osmnx's "bike" filter without "footway",
+# like BIKE_FILTER in backend/graph.py. Keep the two in sync.
+ROUTER_EXCLUDED = {
     "area": "yes",
     "access": "private",
     "highway": (
-        "abandoned|bus_guideway|construction|corridor|elevator|escalator|footway|motor|no|"
+        "abandoned|bus_guideway|construction|corridor|elevator|escalator|motor|no|"
         "planned|platform|proposed|raceway|razed|rest_area|services|steps"
     ),
     "bicycle": "no",
@@ -136,16 +140,16 @@ def classify_way(tags: dict[str, Any]) -> str:
     return "bikeable"
 
 
-def in_osmnx_bike_network(tags: dict[str, Any]) -> bool:
-    """Whether ``ox.graph_from_*(network_type="bike")`` keeps this way.
+def in_router_network(tags: dict[str, Any]) -> bool:
+    """Whether the router's graph (``backend.graph.BIKE_FILTER``) keeps this way.
 
-    That is the graph the router is built from, so ``False`` means the
-    router cannot use the way at all (e.g. every ``highway=footway``).
+    ``False`` means the router cannot use the way at all (e.g. steps, or a
+    footway with ``bicycle=no``).
     """
 
     return not any(
         re.search(pattern, value)
-        for key, pattern in OSMNX_BIKE_EXCLUDED.items()
+        for key, pattern in ROUTER_EXCLUDED.items()
         for value in _tag_values(tags.get(key))
     )
 
@@ -173,7 +177,7 @@ def download_osm_edges(area: Polygon) -> gpd.GeoDataFrame:
     edges = ox.graph_to_gdfs(graph, nodes=False).reset_index(drop=True)
     records = edges.to_dict("records")
     edges["edge_class"] = [classify_way(row) for row in records]
-    edges["in_bike_graph"] = [in_osmnx_bike_network(row) for row in records]
+    edges["in_bike_graph"] = [in_router_network(row) for row in records]
     edges = edges.to_crs(METRIC_CRS)
     # Two-way streets appear once per direction; keep one copy.
     wkb = pd.Series(shapely.to_wkb(shapely.normalize(edges.geometry.values)))
@@ -746,13 +750,13 @@ def build(
     return summary
 
 
-def router_graph_edges(place: str = PLACE) -> gpd.GeoDataFrame:
-    """The ways the router can use: the same osmnx call as ``router()`` in app.py.
+def router_graph_edges() -> gpd.GeoDataFrame:
+    """The ways the router can use: its own cached graph (``backend.graph``).
 
     Two-way streets appear once per direction in that graph; one copy is kept.
     """
 
-    graph = ox.graph_from_place(place, network_type="bike")
+    graph = load_graph()
     edges = ox.graph_to_gdfs(graph, nodes=False).reset_index(drop=True)
     wkb = pd.Series(shapely.to_wkb(shapely.normalize(edges.geometry.values)))
     edges = edges[~wkb.duplicated().to_numpy()]
@@ -767,7 +771,7 @@ def router_graph_edges(place: str = PLACE) -> gpd.GeoDataFrame:
 
 
 def export_router_graph(output_dir: Path, refresh: bool = False) -> Path:
-    """Write ``router_graph.geojson`` once (one Overpass download)."""
+    """Write ``router_graph.geojson`` from the router's graph."""
 
     path = output_dir / "router_graph.geojson"
     if refresh or not path.exists():

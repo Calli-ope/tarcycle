@@ -12,6 +12,7 @@ import shapely
 from shapely.geometry import Point
 from shapely.ops import substring
 
+from .gps_layer import GpsWay, edge_gps_trips
 from .graph import edge_line
 from .models import RoutingPreferences
 
@@ -20,6 +21,8 @@ Edge = tuple[Any, Any, Any]
 CYCLEWAY_KEYS = ("cycleway", "cycleway:left", "cycleway:right", "cycleway:both")
 MAJOR_ROADS = ("primary", "secondary", "tertiary", "trunk")
 ROADSIDE_DISTANCE_M = 25.0
+# GPS layer cells need at least this many trips (privacy filter).
+MINIMUM_TRIPS = 10
 # The alternative route is searched with the best route's edges this much more
 # expensive, and is dropped if it shares more than this share of its length.
 ALTERNATIVE_PENALTY = 3.0
@@ -56,6 +59,7 @@ def edge_cost(
     preferences: RoutingPreferences,
     facility: str | None = None,
     sidewalk: bool = False,
+    trips: int | None = None,
 ) -> float:
     highway = _as_text(attributes.get("highway"))
     if "motorway" in highway:
@@ -75,6 +79,12 @@ def edge_cost(
         factor *= preferences.major_road_factor
     uphill_grade = float(attributes.get("average_uphill_grade", 0.0))
     factor *= 1.0 + preferences.uphill_factor * uphill_grade
+    if trips:
+        # 0 at the 10-trip privacy threshold, 1 at saturation, log-scaled.
+        popularity = math.log(max(trips, MINIMUM_TRIPS) / MINIMUM_TRIPS) / math.log(
+            preferences.popularity_saturation_trips / MINIMUM_TRIPS
+        )
+        factor *= 1.0 - preferences.popularity_weight * min(1.0, popularity)
     return float(attributes["length"]) * factor
 
 
@@ -87,6 +97,7 @@ class NetworkXRouter:
         self,
         graph: nx.MultiDiGraph,
         preferences: RoutingPreferences | None = None,
+        gps_ways: dict[int, GpsWay] | None = None,
     ) -> None:
         self.graph = graph
         self.preferences = preferences or RoutingPreferences()
@@ -133,6 +144,7 @@ class NetworkXRouter:
                 self.preferences,
                 self.facility[edge],
                 edge in sidewalks,
+                edge_gps_trips(graph.edges[edge], gps_ways) if gps_ways else None,
             )
             for edge in self.edges
         }

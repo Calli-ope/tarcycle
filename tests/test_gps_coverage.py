@@ -21,7 +21,7 @@ from backend.gps_coverage import (
     alongside_share,
     gap_group,
     infra_kind,
-    in_osmnx_bike_network,
+    in_router_network,
     rebuild_from_cache,
     valid_route_codes,
     read_location_chunks,
@@ -202,8 +202,9 @@ def test_densify_trims_trip_ends_near_stations():
     [
         ({"highway": "residential"}, True),
         ({"highway": "cycleway"}, True),
-        ({"highway": "footway"}, False),
-        ({"highway": "footway", "bicycle": "yes"}, False),  # osmnx drops every footway
+        ({"highway": "footway"}, True),  # the router keeps footways, unlike osmnx's "bike"
+        ({"highway": "footway", "bicycle": "yes"}, True),
+        ({"highway": "footway", "bicycle": "no"}, False),
         ({"highway": "steps"}, False),
         ({"highway": "motorway_link"}, False),
         ({"highway": "residential", "bicycle": "no"}, False),
@@ -212,8 +213,8 @@ def test_densify_trims_trip_ends_near_stations():
         ({"highway": "pedestrian"}, True),
     ],
 )
-def test_in_osmnx_bike_network(tags, expected):
-    assert in_osmnx_bike_network(tags) is expected
+def test_in_router_network(tags, expected):
+    assert in_router_network(tags) is expected
 
 
 def test_valid_route_codes_drops_aborted_rentals(tmp_path):

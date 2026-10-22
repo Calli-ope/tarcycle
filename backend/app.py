@@ -14,6 +14,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from .gps_layer import load_gps_ways
 from .graph import TERRAIN_DIR, GraphUnavailable, load_graph
 from .router import NetworkXRouter
 from .stations import load_stations
@@ -47,7 +48,9 @@ def stations():
 
 @lru_cache(maxsize=1)
 def _networkx_router() -> NetworkXRouter:
-    return NetworkXRouter(load_graph())
+    gps_ways_file = COVERAGE_DIR / "gps_ways.geojson"
+    gps_ways = load_gps_ways(gps_ways_file) if gps_ways_file.exists() else None
+    return NetworkXRouter(load_graph(), gps_ways=gps_ways)
 
 
 def networkx_router() -> NetworkXRouter:

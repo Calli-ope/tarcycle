@@ -12,24 +12,23 @@ records what was built, why, what we found and where it can break.
    popularity-based weights.
 3. A demo map for the report and presentation (`coverage.html`).
 
-Routing code (`router.py`, `/api/route`) was not changed.
+After merging `main` (routing rework), the router includes footways, reads
+`cycleway*`/`surface`/`bicycle`, and uses `trips` as a popularity factor.
 
 ## Key facts to remember
 
-- **Footways are not in the router graph.** `router()` in `backend/app.py`
-  builds `ox.graph_from_place("Tartu, Estonia", network_type="bike")`.
-  osmnx's `bike` filter drops every `highway=footway` (also steps, motorways,
-  private, `area=yes`, `bicycle=no`), even with `bicycle=yes`. Riders still
-  use footways: they are most of the 162 km of gaps.
-- **The router never sees cycle lanes or surfaces.** osmnx's default
-  `useful_tags_way` lacks `cycleway*` and `surface`, so `edge_cost`'s
-  cycle-lane factor and cobblestone penalty never apply. Only
-  `highway=cycleway` is recognised. Not fixed here (router is Konrad's).
-- **`in_bike_graph` is a copy of osmnx's filter**
-  (`in_osmnx_bike_network()` in `gps_coverage.py`), not read from the router.
-  Checked against the real graph: 100% of ways flagged missing are absent
-  from it. If the router's graph changes (e.g. footways added), change that
-  function the same way and run `--from-cache`.
+- **Footways were not in the router graph** when this analysis ran: osmnx's
+  `bike` filter drops every `highway=footway`. The router now uses that
+  filter without `footway` (`BIKE_FILTER` in `backend/graph.py`), so
+  footways are routable unless `bicycle=no`.
+- **Cycle lanes and surfaces**: the router now downloads `cycleway*`,
+  `surface` and `bicycle`, so lane and cobblestone factors apply.
+- **`in_bike_graph` is a copy of the router's filter**
+  (`in_router_network()` in `gps_coverage.py`), not read from the router.
+  If the router's filter changes, change that function the same way and run
+  `--from-cache --refresh-osm`.
+- **The router uses `trips`** as a popularity factor (`popularity_weight`,
+  `popularity_saturation_trips` in `RoutingPreferences`).
 
 ## Pipeline (`backend/gps_coverage.py`)
 
@@ -79,6 +78,13 @@ cells), so layers can be rebuilt without the raw data in ~15 s.
   90.5% of its edges get a trip count. Ways flagged `in_bike_graph` but
   absent from it (12.7%) are mostly outside Tartu's boundary (our area has a
   500 m buffer, the router's has none) and carry 2.7% of trips.
+- After footways joined the router graph (join by way id against the cached
+  graph, not a pipeline rerun): 141.5 of the 162 km of gaps are now in it,
+  94% of gap trip-km; of the real gaps (`separate` + `partly`) 57 of 71 km.
+  Still missing: 20 km, mostly `service` (8 km), footways outside the Tartu
+  boundary or with `bicycle=no` (10.7 km) and steps. `summary.json` and the
+  `gap_group` values still describe the old graph until the pipeline reruns
+  (`--from-cache --refresh-osm`; it failed while Overpass was overloaded).
 
 ## History of decisions
 
@@ -103,7 +109,7 @@ cells), so layers can be rebuilt without the raw data in ~15 s.
 - **"Unknown coverage layer"**: the server runs an old `app.py`; restart.
 - **Map layers empty in headless Chrome**: don't use `--virtual-time-budget`
   (it stalls MapLibre's web worker); drive Chrome via DevTools in real time.
-- **Tests**: `python -m pytest` (47), including an offline end-to-end run on
+- **Tests**: `python -m pytest` (48), including an offline end-to-end run on
   synthetic trips with a fake OSM network.
 
 ## Open issues

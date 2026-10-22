@@ -105,7 +105,8 @@ after every short cycleway fragment up to the detour limit.
 
 Compares where Smart Bike riders actually ride (GPS traces) with OpenStreetMap
 and with the router's graph, to find the ways riders use that the router
-cannot: the "gaps" (mostly footways, which osmnx's `bike` network leaves out).
+cannot: the "gaps" (mostly footways, which osmnx's `bike` network leaves out;
+the router has included them since the routing rework, see below).
 
 1. Put the monthly GPS files (`locations_2025MM.csv`, from `Locations 2025.zip`)
    in `data/raw/Locations/`. `data/raw/` is gitignored: this data is private.
@@ -148,7 +149,7 @@ outputs are aggregated and do not reveal individual trips. Outputs:
 drawn as its ridden part only: `way_id` (OSM way id), `highway`, `name`,
 `trips` (median Smart Bike trips in 2025), `ridden_m`, `length_m`,
 `covered_share` and `in_bike_graph`. `in_bike_graph=false` means the router's
-osmnx `bike` graph does not contain the way at all (mostly `highway=footway`).
+graph does not contain the way at all.
 Those "gaps" also get `alongside_share` (fraction within 25 m of a way the
 router has) and `gap_group`:
 
@@ -160,8 +161,8 @@ router has) and `gap_group`:
 
 The map (`coverage.html`) has independently switchable layers:
 
-1. **Router graph**: `router_graph.geojson`, built with the same
-   `graph_from_place(..., network_type="bike")` call as `router()`.
+1. **Router graph**: `router_graph.geojson`, exported from the router's own
+   cached graph (`backend/graph.py`).
 2. **Where riders go**: all ridden ways, coloured by trips.
 3. **Gaps**: green = `separate` + `partly` (gaps the GPS data covers), grey =
    `alongside` (sidewalks next to router ways).
@@ -172,13 +173,18 @@ candidate zones, trips per edge) for comparison.
 These layers can be rebuilt from the saved outputs without the raw GPS data:
 `python -m backend.gps_coverage --from-cache` (about 15 s).
 
-`in_bike_graph` comes from `in_osmnx_bike_network()`, a copy of osmnx's
-`bike` filter, not from the router itself. If the router's graph changes
-(e.g. footways are added), update that function to match and run
-`--from-cache` (add `--refresh-osm` if the OSM download changed too).
+`in_bike_graph` comes from `in_router_network()`, a copy of the router's
+filter (`BIKE_FILTER` in `backend/graph.py`: osmnx's `bike` filter without
+`footway`). If the router's filter changes, update that function to match and
+run `--from-cache --refresh-osm`.
 
-The layer does not change routing. To use it in the router, join it by OSM way
-id with `backend/gps_layer.py`:
+The router uses the layer as a popularity signal: an edge's cost factor is
+multiplied by `1 - popularity_weight × p`, where `p` grows logarithmically
+from 0 at 10 trips to 1 at `popularity_saturation_trips` (5,000) trips in
+2025 (`RoutingPreferences`; `popularity_weight = 0` turns it off). With the
+default weight of 0.3, routes for 40 random station pairs run on ways with at
+least 1,000 trips 74 % of the time instead of 69 %, for 0.7 % more length.
+The join is by OSM way id with `backend/gps_layer.py`:
 
 ```python
 from backend.gps_layer import load_gps_ways, edge_gps_trips
