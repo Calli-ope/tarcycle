@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import heapq
 import math
+import re
 from itertools import count
 from typing import Any, Callable
 
@@ -20,6 +21,18 @@ from .models import RoutingPreferences
 Edge = tuple[Any, Any, Any]
 CYCLEWAY_KEYS = ("cycleway", "cycleway:left", "cycleway:right", "cycleway:both")
 MAJOR_ROADS = ("primary", "secondary", "tertiary", "trunk")
+NOT_ROADS = ("cycleway", "path", "footway", "pedestrian", "track", "steps", "bridleway")
+ROUGH_SURFACES = ("cobblestone", "sett", "unpaved", "gravel", "dirt", "ground", "grass", "sand")
+# Estonian urban default where maxspeed is not tagged.
+URBAN_SPEED_KMH = 50.0
+# Travel time: riders slow down on sidewalks, rough surfaces and climbs (e-bike
+# assistance makes hills matter less), and lose time at junctions.
+SIDEWALK_SPEED_KMH = 12.0
+PATH_SPEED_SHARE = 0.85
+ROUGH_SPEED_SHARE = 0.7
+HILL_SLOWDOWN = 3.0
+CROSSING_DELAY_S = 8.0
+LEFT_TURN_DELAY_S = 5.0
 ROADSIDE_DISTANCE_M = 25.0
 # GPS layer cells need at least this many trips (privacy filter).
 MINIMUM_TRIPS = 10
@@ -37,6 +50,13 @@ def _as_text(value: Any) -> str:
 
 def _has_any(value: str, options: tuple[str, ...]) -> bool:
     return any(option in value for option in options)
+
+
+def _number(value: Any) -> float | None:
+    """Largest number in an OSM value such as "50", "['30', '50']" or "2"."""
+
+    numbers = re.findall(r"\d+(?:\.\d+)?", _as_text(value))
+    return max(float(number) for number in numbers) if numbers else None
 
 
 def facility_type(attributes: dict[str, Any]) -> str:
@@ -77,6 +97,13 @@ def edge_cost(
         factor *= preferences.cobblestone_factor
     if _has_any(highway, MAJOR_ROADS):
         factor *= preferences.major_road_factor
+    if not _has_any(highway, NOT_ROADS):
+        maxspeed = _number(attributes.get("maxspeed")) or URBAN_SPEED_KMH
+        lanes = _number(attributes.get("lanes")) or 1
+        if "living_street" in highway or maxspeed <= 30:
+            factor *= preferences.calm_street_factor
+        elif maxspeed >= 60 or lanes >= 3:
+            factor *= preferences.fast_road_factor
     uphill_grade = float(attributes.get("average_uphill_grade", 0.0))
     factor *= 1.0 + preferences.uphill_factor * uphill_grade
     if trips:
@@ -86,6 +113,30 @@ def edge_cost(
         )
         factor *= 1.0 - preferences.popularity_weight * min(1.0, popularity)
     return float(attributes["length"]) * factor
+
+
+def edge_speed(
+    attributes: dict[str, Any],
+    preferences: RoutingPreferences,
+    facility: str,
+    sidewalk: bool = False,
+) -> float:
+    """Riding speed in m/s."""
+
+    speed = preferences.cycling_speed_kmh
+    if sidewalk:
+        speed = min(speed, SIDEWALK_SPEED_KMH)
+    elif facility == "path":
+        speed *= PATH_SPEED_SHARE
+    if _has_any(_as_text(attributes.get("surface")), ROUGH_SURFACES):
+        speed *= ROUGH_SPEED_SHARE
+    grade = float(attributes.get("average_uphill_grade", 0.0))
+    speed *= max(0.5, 1.0 - HILL_SLOWDOWN * grade)
+    return speed / 3.6
+
+
+def _bearing(start: tuple[float, ...], end: tuple[float, ...], x_scale: float) -> float:
+    return math.degrees(math.atan2(end[1] - start[1], (end[0] - start[0]) * x_scale))
 
 
 class NetworkXRouter:
@@ -137,15 +188,43 @@ class NetworkXRouter:
                 _as_text(graph.edges[edge].get("bicycle")), ("yes", "permissive")
             )
         ]
-        sidewalks = set(self._beside(footways, roads))
+        self.sidewalks = set(self._beside(footways, roads))
         self.cost = {
             edge: edge_cost(
                 graph.edges[edge],
                 self.preferences,
                 self.facility[edge],
-                edge in sidewalks,
+                edge in self.sidewalks,
                 edge_gps_trips(graph.edges[edge], gps_ways) if gps_ways else None,
             )
+            for edge in self.edges
+        }
+        self.seconds = {
+            edge: self.length[edge]
+            / edge_speed(
+                graph.edges[edge],
+                self.preferences,
+                self.facility[edge],
+                edge in self.sidewalks,
+            )
+            for edge in self.edges
+        }
+        # Junctions: traffic lights, nodes on major roads, and turn directions.
+        self.on_major = {e for e in self.edges if _has_any(highway[e], MAJOR_ROADS)}
+        self.major_nodes = {node for edge in self.on_major for node in edge[:2]}
+        self.signals = {
+            node
+            for node, data in graph.nodes(data=True)
+            if data.get("highway") == "traffic_signals"
+            or "traffic_signals" in _as_text(data.get("crossing"))
+            or _as_text(data.get("crossing:signals")) == "yes"
+        }
+        self.bearing_start = {
+            edge: _bearing(*self.lines[edge].coords[:2], self.x_scale)
+            for edge in self.edges
+        }
+        self.bearing_end = {
+            edge: _bearing(*self.lines[edge].coords[-2:], self.x_scale)
             for edge in self.edges
         }
         self.successors = {
@@ -215,13 +294,35 @@ class NetworkXRouter:
             for node, connector in connectors.items()
         }
 
+    def _junction(self, previous: Edge, edge: Edge) -> tuple[float, float]:
+        """Cost (metres of riding) and delay (seconds) of passing from one edge
+        into the next: traffic lights, crossing a major road without them, and
+        left turns across traffic at major junctions."""
+
+        node, preferences = edge[0], self.preferences
+        if node in self.signals:
+            delay = preferences.signal_delay_s
+            return delay * preferences.cycling_speed_kmh / 3.6, delay
+        if node not in self.major_nodes:
+            return 0.0, 0.0
+        cost = delay = 0.0
+        if previous not in self.on_major and edge not in self.on_major:
+            cost, delay = preferences.major_crossing_cost, CROSSING_DELAY_S
+        turn = (self.bearing_start[edge] - self.bearing_end[previous] + 180) % 360 - 180
+        if 30 < turn < 150:
+            cost += preferences.left_turn_cost
+            delay += LEFT_TURN_DELAY_S
+        return cost, delay
+
     def _preferred_weight(self, previous: Edge | None, edge: Edge) -> float:
+        if previous is None:
+            return self.cost[edge]
         transition = (
             self.preferences.facility_transition_cost
-            if previous is not None and self.facility[previous] != self.facility[edge]
+            if self.facility[previous] != self.facility[edge]
             else 0.0
         )
-        return self.cost[edge] + transition
+        return self.cost[edge] + transition + self._junction(previous, edge)[0]
 
     def _search(
         self,
@@ -354,6 +455,15 @@ class NetworkXRouter:
                 if index == 0 or (x, y) != coordinates[index - 1]
             ]
             data = [self.graph.edges[edge] for edge in route]
+            seconds = (
+                (start_offsets[start] + end_offsets[end])
+                / (self.preferences.cycling_speed_kmh / 3.6)
+                + sum(self.seconds[edge] for edge in route)
+                + sum(
+                    self._junction(previous, edge)[1]
+                    for previous, edge in zip(route, route[1:])
+                )
+            )
             dedicated_length = sum(
                 self.length[edge]
                 for edge in route
@@ -365,6 +475,8 @@ class NetworkXRouter:
                     "backend": self.backend_name,
                     "node_count": len(route) + 1,
                     "route_length_m": round(route_length, 1),
+                    "time_minutes": round(seconds / 60, 1),
+                    "traffic_lights": sum(edge[0] in self.signals for edge in route[1:]),
                     "elevation_gain_m": round(
                         sum(float(item.get("elevation_gain", 0.0)) for item in data),
                         1,

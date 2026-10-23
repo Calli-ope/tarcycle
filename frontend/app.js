@@ -26,11 +26,57 @@ let mode = "stations";
 let backend = "networkx";
 let hasRoute = false;
 let routes = [];
+// Address mode: suggestion label -> "lat, lon", map markers, next point a click sets.
+const knownPlaces = new Map();
+const markers = {};
+let nextPoint = "from";
+
+function addressInput(which) {
+  return document.querySelector(`#${which}-address`);
+}
+
+function placeMarker(which, lngLat) {
+  if (!markers[which]) {
+    markers[which] = new maplibregl.Marker({ color: which === "from" ? "#16a34a" : "#dc2626", draggable: true })
+      .setLngLat(lngLat)
+      .addTo(map);
+    markers[which].on("dragend", () => {
+      const { lat, lng } = markers[which].getLngLat();
+      addressInput(which).value = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+      planIfReady();
+    });
+  }
+  markers[which].setLngLat(lngLat);
+}
+
+function planIfReady() {
+  if (addressInput("from").value.trim() && addressInput("to").value.trim()) planRoute();
+}
+
+let suggestTimer;
+function suggestPlaces(input) {
+  clearTimeout(suggestTimer);
+  const query = input.value.trim();
+  if (query.length < 3 || knownPlaces.has(query)) return;
+  suggestTimer = setTimeout(async () => {
+    const response = await fetch(`${API_URL}/api/suggest?${new URLSearchParams({ q: query })}`);
+    if (!response.ok) return;
+    input.list.replaceChildren(
+      ...(await response.json()).map(({ label, lat, lon }) => {
+        knownPlaces.set(label, `${lat}, ${lon}`);
+        const option = document.createElement("option");
+        option.value = label;
+        return option;
+      }),
+    );
+  }, 250);
+}
 
 function routeSummary(feature) {
-  const { route_length_m, time_minutes } = feature.properties;
+  const { route_length_m, time_minutes, traffic_lights } = feature.properties;
   const time = time_minutes ? `, ${Math.round(time_minutes)} min` : "";
-  return `${(route_length_m / 1000).toFixed(2)} km${time}`;
+  const lights = traffic_lights ? `, ${traffic_lights} traffic lights` : "";
+  return `${(route_length_m / 1000).toFixed(2)} km${time}${lights}`;
 }
 
 function showRoute(selected) {
@@ -41,8 +87,8 @@ function showRoute(selected) {
       properties: { ...feature.properties, index, selected: index === selected },
     })),
   });
-  const { backend, fallback } = routes[selected].properties;
-  const via = fallback ? `${backend} (Valhalla unavailable)` : backend;
+  const { backend, fallback, requested_backend } = routes[selected].properties;
+  const via = fallback ? `${backend} (${requested_backend} unavailable)` : backend;
   const others = routes.filter((_, index) => index !== selected).map(routeSummary);
   const alternative = others.length ? ` Alternative (grey, click to switch): ${others.join(", ")}.` : "";
   status.textContent = `${routeSummary(routes[selected])}, routed with ${via}.${alternative}`;
@@ -62,6 +108,7 @@ function setMode(nextMode) {
   document.querySelector("#address-inputs").hidden = mode !== "addresses";
   document.querySelector("#stations-mode").classList.toggle("active", mode === "stations");
   document.querySelector("#addresses-mode").classList.toggle("active", mode === "addresses");
+  for (const marker of Object.values(markers)) marker.getElement().hidden = mode !== "addresses";
 }
 
 function stationFeatureCollection(stations) {
@@ -124,8 +171,10 @@ async function planRoute() {
     query.set("from", fromSelect.value);
     query.set("to", toSelect.value);
   } else {
-    query.set("from_address", document.querySelector("#from-address").value);
-    query.set("to_address", document.querySelector("#to-address").value);
+    for (const which of ["from", "to"]) {
+      const value = addressInput(which).value.trim();
+      query.set(`${which}_address`, knownPlaces.get(value) ?? value);
+    }
   }
   try {
     const response = await fetch(`${API_URL}/api/route?${query}`);
@@ -138,6 +187,11 @@ async function planRoute() {
     }
     map.fitBounds(bounds, { padding: 60 });
     hasRoute = true;
+    if (mode === "addresses") {
+      const coordinates = routes[0].geometry.coordinates;
+      placeMarker("from", coordinates[0]);
+      placeMarker("to", coordinates[coordinates.length - 1]);
+    }
     showRoute(0);
   } catch (error) {
     status.textContent = error.message;
@@ -166,6 +220,16 @@ map.on("load", () => {
   map.on("click", "route-alternative", (event) => showRoute(event.features[0].properties.index));
   map.on("mouseenter", "route-alternative", () => (map.getCanvas().style.cursor = "pointer"));
   map.on("mouseleave", "route-alternative", () => (map.getCanvas().style.cursor = ""));
+  // Clicking the map sets start and destination in turn (not when switching routes).
+  map.on("click", (event) => {
+    if (map.queryRenderedFeatures(event.point, { layers: ["route-alternative"] }).length) return;
+    setMode("addresses");
+    const { lat, lng } = event.lngLat;
+    addressInput(nextPoint).value = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+    placeMarker(nextPoint, event.lngLat);
+    nextPoint = nextPoint === "from" ? "to" : "from";
+    planIfReady();
+  });
   loadStations().catch((error) => {
     status.textContent = error.message;
   });
@@ -176,4 +240,7 @@ document.querySelector("#stations-mode").addEventListener("click", () => setMode
 document.querySelector("#addresses-mode").addEventListener("click", () => setMode("addresses"));
 for (const button of document.querySelectorAll(".backend")) {
   button.addEventListener("click", () => setBackend(button.dataset.backend));
+}
+for (const which of ["from", "to"]) {
+  addressInput(which).addEventListener("input", (event) => suggestPlaces(event.target));
 }

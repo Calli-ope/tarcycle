@@ -1,12 +1,16 @@
 # Tarcycle
 
 Tarcycle is a small Tartu bicycle-routing prototype. The backend routes with
-its own OSMnx/NetworkX cost model and can optionally use a local Valhalla
-server instead. The MapLibre GL JS frontend displays bike-rack stations from
+its own OSMnx/NetworkX cost model and can optionally use local Valhalla or
+BRouter servers instead, for comparison. The MapLibre GL JS frontend displays bike-rack stations from
 `Rattaparklad.csv` and routes between two selected stations.
 
 The planner supports both station-to-station routes and address-to-address
-routes. Address lookup uses OpenStreetMap Nominatim and is cached in memory.
+routes. Address lookup uses OpenStreetMap Nominatim and is cached in memory;
+address fields autocomplete through Photon (Nominatim does not allow
+autocomplete). Clicking the map sets the start and destination in turn, and
+the markers can be dragged to re-plan. Coordinates such as `58.38, 26.72` can
+also be typed directly.
 
 ## Run
 
@@ -39,22 +43,37 @@ The FastAPI server serves both the API and the frontend. You do not need a
 second terminal or a separate frontend server. If you skip the build step,
 the app builds the graph in the background on startup.
 
-## Valhalla (optional)
+When the graph format changes (`OSM_MODEL` in `backend/graph.py`), the app
+keeps using the old cache, so an overloaded Overpass server never blocks
+routing; run `python -m backend.graph` again to update it.
 
-Start the Valhalla server with Docker. It reuses the tiles in `valhalla-data/`
-and builds them from the Estonia OSM extract the first time:
+## Valhalla and BRouter (optional)
+
+Both run in Docker next to the app. Valhalla reuses the tiles in
+`valhalla-data/` and builds them from the Estonia OSM extract the first time.
+BRouter needs one segment file (24 MB) in `brouter-data/segments4/`:
 
 ```powershell
+New-Item -ItemType Directory -Force brouter-data/segments4
+Invoke-WebRequest https://brouter.de/brouter/segments4/E25_N55.rd5 -OutFile brouter-data/segments4/E25_N55.rd5
 docker compose up -d
 ```
 
-Then pick **Valhalla** under "Router" in the page to compare it with NetworkX
-on the same trip. The app expects Valhalla at `http://127.0.0.1:8002`; set
-`TARCYCLE_VALHALLA_URL` to use another address. If Valhalla is not reachable,
-the route falls back to NetworkX and the status line says so. Its bicycle
-costing lives in `BICYCLE_COSTING` in `backend/valhalla.py`. `use_hills` only
-has an effect after building with `build_elevation: "True"` in
-`docker-compose.yml`.
+Then pick **Valhalla** or **BRouter** under "Router" in the page to compare
+them with NetworkX on the same trip. The app expects Valhalla at
+`http://127.0.0.1:8002` and BRouter at `http://127.0.0.1:17777`
+(`TARCYCLE_VALHALLA_URL`, `TARCYCLE_BROUTER_URL` to change them). If an engine
+is not reachable, the route falls back to NetworkX and the status line says
+so.
+
+- **Valhalla**: bicycle costing in `BICYCLE_COSTING` in `backend/valhalla.py`.
+  `use_hills` only has an effect after building with `build_elevation: "True"`
+  in `docker-compose.yml`. Alternatives come from its `alternates` option.
+- **BRouter**: uses the `trekking` profile (`TARCYCLE_BROUTER_PROFILE` for
+  another one, e.g. `fastbike-verylowtraffic`). Alternatives come from
+  `alternativeidx=1`. No release image reads the current segment format (v11)
+  yet, so `docker-compose.yml` pins the nightly image by digest; when updating
+  it, download a fresh segment file too.
 
 ## NetworkX routing model
 
@@ -71,6 +90,26 @@ Edge costs are length times factors from `RoutingPreferences` in
 `bicycle=designated`), painted lanes and tracks on roads (`cycleway`,
 `cycleway:left/right/both`), paths, sidewalks, cobblestones, major roads and
 uphill grade. Changing between facility types adds `facility_transition_cost`.
+
+Roads (not cycleways, paths or footways) also depend on traffic: streets with
+`maxspeed` 30 or less and living streets get `calm_street_factor` (0.8), roads
+with `maxspeed` 60 or more or 3+ lanes `fast_road_factor` (1.5). Untagged
+roads count as the Estonian urban 50 km/h, so these only apply where OSM says
+so.
+
+Junctions are priced when passing from one edge into the next, in metres of
+riding: traffic lights (`highway=traffic_signals`, `crossing=traffic_signals`
+or `crossing:signals=yes` on the node) cost the distance ridden during
+`signal_delay_s` (20 s); crossing a major road without lights adds
+`major_crossing_cost` (60 m) and turning left at a junction with a major road
+`left_turn_cost` (30 m).
+
+Each route reports a travel time (`time_minutes`) for the Smart Bike fleet,
+which is mostly e-bikes: `cycling_speed_kmh` (18) on roads and cycleways, 85 %
+of it on paths, at most 12 km/h on sidewalks, 70 % on rough surfaces, slower
+uphill (assistance keeps the effect small), plus junction delays (lights,
+8 s per unsignalled major crossing, 5 s per left turn). It also reports the
+number of `traffic_lights` passed.
 
 Two rules use the geometry around each way (within 25 m, sampled at a
 quarter, half and three quarters of its length):
@@ -100,6 +139,40 @@ Routing factors must remain non-negative because Dijkstra's algorithm requires
 non-negative edge costs. Keep the factors within about one order of magnitude
 of a plain road (1.0): with a cycleway factor of 0.05 the router zigzagged
 after every short cycleway fragment up to the detour limit.
+
+## Evaluating route quality
+
+```powershell
+python -m backend.evaluate --pairs 100
+```
+
+Routes random station pairs 1–6 km apart with every engine: `networkx` (the
+cost model), `networkx_no_gps` (without the GPS popularity factor), `shortest`
+(every factor neutral), `valhalla`, and BRouter's `trekking` and
+`fastbike-verylowtraffic` profiles (each skipped if its server is not
+running). Each route's
+geometry is matched to the router's graph every 10 m, so all engines are
+measured the same way. Per route it writes to
+`data/evaluation/route_quality.csv`: length, detour against `shortest`, time
+(each external engine's own estimate, so not comparable across engines), share of length per facility class
+(`car_free`, `lane_or_track`, `sidewalk`, `quiet_road`, `major_road`,
+`unmatched`), rough surfaces, ways with at least 1,000 Smart Bike trips in
+2025, and major-road crossings. It prints the mean per engine.
+
+These measure whether routes are good by the router's own goals (car-free,
+away from major roads, few crossings, small detour). How close routes come to
+real GPS traces is a separate question; `share_popular` is only a rough proxy.
+
+Results for 100 pairs (99 routable), means:
+
+| Engine | Length (m) | Detour | Car-free | Lane/track | Sidewalk | Quiet road | Major road | Rough | Popular | Major crossings |
+|---|---|---|---|---|---|---|---|---|---|---|
+| networkx | 4,620 | 1.15 | 55 % | 24 % | 3 % | 12 % | 1.0 % | 3.8 % | 72 % | 4.8 |
+| networkx_no_gps | 4,560 | 1.13 | 59 % | 21 % | 4 % | 11 % | 0.2 % | 4.7 % | 64 % | 5.1 |
+| shortest | 4,040 | 1.00 | 23 % | 18 % | 11 % | 17 % | 25.2 % | 5.0 % | 60 % | 3.3 |
+| valhalla | 4,240 | 1.08 | 22 % | 30 % | 0.1 % | 25 % | 13.3 % | 1.3 % | 71 % | 4.9 |
+| brouter_trekking | 4,200 | 1.06 | 21 % | 35 % | 0.8 % | 25 % | 9.6 % | 2.8 % | 75 % | 6.2 |
+| brouter_low_traffic | 4,280 | 1.09 | 12 % | 25 % | 0.6 % | 39 % | 14.8 % | 2.2 % | 68 % | 3.4 |
 
 ## GPS traces vs OSM (bike route expansion)
 

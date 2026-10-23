@@ -16,6 +16,18 @@ class RoutingPreferences:
     facility_transition_cost: float = 20.0
     maximum_detour_factor: float = 1.50
     uphill_factor: float = 1.0
+    # Roads: 30 km/h or slower (and living streets) are calmer, 60+ km/h or 3+
+    # lanes busier. Untagged roads count as the urban 50 km/h.
+    calm_street_factor: float = 0.8
+    fast_road_factor: float = 1.5
+    # Junctions, in metres of riding: traffic lights cost the distance ridden
+    # while waiting; crossing a major road without lights and turning left at
+    # a major junction add a safety penalty.
+    signal_delay_s: float = 20.0
+    major_crossing_cost: float = 60.0
+    left_turn_cost: float = 30.0
+    # Travel time. Smart Bikes are mostly e-bikes (assisted up to 25 km/h).
+    cycling_speed_kmh: float = 18.0
     # Smart Bike GPS usage (data/gps_coverage/gps_ways.geojson): ways ridden by
     # popularity_saturation_trips or more trips in 2025 cost popularity_weight
     # less, scaled logarithmically down to none at 10 trips. 0 disables it.

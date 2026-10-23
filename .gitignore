@@ -5,6 +5,7 @@ node_modules/
 __pycache__/
 run.bat
 valhalla-data/*
+brouter-data/
 
 # Private Smart Bike data (trip records, GPS traces) - never commit
 data/raw/
