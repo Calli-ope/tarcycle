@@ -1,0 +1,68 @@
+{
+  "trips": 400,
+  "match_distance_m": 20.0,
+  "per_engine": {
+    "networkx": {
+      "route_on_trace_mean": 0.477,
+      "route_on_trace_median": 0.454,
+      "trace_on_route_mean": 0.473,
+      "trace_on_route_median": 0.441,
+      "route_to_trace_length_mean": 1.034,
+      "route_to_trace_length_median": 1.027
+    },
+    "networkx_no_gps": {
+      "route_on_trace_mean": 0.457,
+      "route_on_trace_median": 0.435,
+      "trace_on_route_mean": 0.454,
+      "trace_on_route_median": 0.418,
+      "route_to_trace_length_mean": 1.031,
+      "route_to_trace_length_median": 1.026
+    },
+    "shortest": {
+      "route_on_trace_mean": 0.517,
+      "route_on_trace_median": 0.514,
+      "trace_on_route_mean": 0.484,
+      "trace_on_route_median": 0.466,
+      "route_to_trace_length_mean": 0.938,
+      "route_to_trace_length_median": 0.951
+    }
+  },
+  "networkx_minus_other": {
+    "networkx_no_gps": {
+      "route_on_trace": {
+        "mean": 0.02,
+        "ci95": [
+          0.007,
+          0.034
+        ],
+        "trips": 400
+      },
+      "trace_on_route": {
+        "mean": 0.02,
+        "ci95": [
+          0.006,
+          0.034
+        ],
+        "trips": 400
+      }
+    },
+    "shortest": {
+      "route_on_trace": {
+        "mean": -0.04,
+        "ci95": [
+          -0.07,
+          -0.007
+        ],
+        "trips": 400
+      },
+      "trace_on_route": {
+        "mean": -0.01,
+        "ci95": [
+          -0.04,
+          0.022
+        ],
+        "trips": 400
+      }
+    }
+  }
+}

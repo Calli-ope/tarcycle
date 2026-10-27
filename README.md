@@ -208,11 +208,11 @@ gitignored and downloaded again when needed.
 From 660,556 real trips (aborted rentals dropped), with no
 `locations_202510_1.csv` (first part of October missing from the data):
 
-- 94.8% of ridden distance is on ways in the router graph, 4.6% on other OSM
-  ways (mostly footways), 0.6% where OSM has no way.
-- Ridden ways missing from the router graph: 162 km. Of the riding on them,
-  43% is on paths away from router ways (`separate` + `partly`, 71 km) and
-  57% on sidewalks alongside router ways (91 km).
+- 99.4% of ridden distance is within 15 m of a router-graph way (94.9%
+  before footways were added to the graph), 0.5% where OSM has no way.
+- Ridden ways missing from the router graph: 6.9 km (162 km before
+  footways), mostly `service` roads (5.3 km), plus steps and footways with
+  `bicycle=no`.
 
 Known limitations: OSM pedestrian squares mapped as areas are not ways, so
 riding across them shows up as `no_osm_way`. Counts are Smart Bike trips

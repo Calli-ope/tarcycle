@@ -70,7 +70,7 @@ cells), so layers can be rebuilt without the raw data in ~15 s.
 
 ## Results (2025)
 
-- 94.8% of ridden distance on router-graph ways, 4.6% on other OSM ways,
+- Old graph (no footways): 94.8% of ridden distance on router-graph ways, 4.6% on other OSM ways,
   0.6% where OSM has no way.
 - Gaps: 162 km ridden. `separate` + `partly` 71 km (43% of gap riding),
   `alongside` 91 km (57%).
@@ -78,13 +78,12 @@ cells), so layers can be rebuilt without the raw data in ~15 s.
   90.5% of its edges get a trip count. Ways flagged `in_bike_graph` but
   absent from it (12.7%) are mostly outside Tartu's boundary (our area has a
   500 m buffer, the router's has none) and carry 2.7% of trips.
-- After footways joined the router graph (join by way id against the cached
-  graph, not a pipeline rerun): 141.5 of the 162 km of gaps are now in it,
-  94% of gap trip-km; of the real gaps (`separate` + `partly`) 57 of 71 km.
-  Still missing: 20 km, mostly `service` (8 km), footways outside the Tartu
-  boundary or with `bicycle=no` (10.7 km) and steps. `summary.json` and the
-  `gap_group` values still describe the old graph until the pipeline reruns
-  (`--from-cache --refresh-osm`; it failed while Overpass was overloaded).
+- After footways joined the router graph (rerun with `--refresh-osm
+  --from-cache`, 27 Oct): 99.4% of ridden distance within 15 m of a router
+  way (94.9% before, same measure). Missing ridden ways: 6.9 km, 186 ways:
+  `service` 5.3 km, footway 0.6 km (`bicycle=no` or outside Tartu), steps
+  0.6 km. Gap groups: `separate` 2.2 km, `partly` 1.4 km, `alongside` 3.4 km.
+  The 162 km figures above describe the old graph.
 
 ## History of decisions
 
@@ -122,3 +121,27 @@ cells), so layers can be rebuilt without the raw data in ~15 s.
 - OSM pedestrian squares are areas, not ways: riding across them is
   `no_osm_way`.
 - `steps` appear in gaps (1.3 km): likely GPS noise next to stairs.
+
+## Do routes follow real riders? (`backend/trace_match.py`, 27 Oct)
+
+400 real 2025 trips (A-to-B, ≥ 800 m straight line, trace ≤ 2× that,
+sampled from 1,501 usable ones) routed from first to last GPS point. Score:
+share of the route within 20 m of that rider's own trace (and vice versa).
+Not circular, unlike "share on popular ways". Traces stay in
+`cache/evaluation/` (private); only scores go to `data/evaluation/`.
+
+| Engine | Route on trace | Trace on route | Route / trace length |
+|---|---|---|---|
+| networkx (with GPS) | 47.7% | 47.3% | 1.03 |
+| networkx_no_gps | 45.7% | 45.4% | 1.03 |
+| shortest | 51.7% | 48.4% | 0.94 |
+
+- The GPS popularity term makes routes closer to real ones: +2.0 points
+  (95% CI +0.7 to +3.4), small but consistent.
+- Riders ride ~6% longer than the shortest path, but the shortest path still
+  matches their traces at least as well: riders mostly take direct routes,
+  while the comfort costs pull routes onto other (calmer) streets.
+- Spread is wide (per-trip match 1–100%, median ~45%); in a street grid many
+  near-equal routes exist.
+- Valhalla not yet included (Docker was off). Rerun without `--sample` after
+  `docker compose up -d`; it reuses the cached traces.
