@@ -20,10 +20,11 @@ from typing import Any, Callable
 
 log = logging.getLogger("poller")
 
-# The endpoint the official map (ratas.tartu.ee) uses. It answers only when the
-# request carries the map's Origin header; otherwise it returns HTTP 500.
-API_URL = "https://serverapp.ratas.tartu.ee/api/map/stations/"
-ORIGIN = "https://ratas.tartu.ee"
+# Official public station API (given to us by Tartu Smart Bike). POST-only; the
+# body {"start": 0, "limit": N} pages through stations (110 in Oct 2026).
+# Field meanings: "RR2021 Tartu - Bike share public API explanation" (Estonian).
+API_URL = "https://api.ratas.tartu.ee/cxf/am/station/map/search"
+REQUEST_BODY = {"start": 0, "limit": 500}
 USER_AGENT = "Tarcycle-poller/0.1 (University of Tartu ITS course project)"
 
 
@@ -68,12 +69,15 @@ CREATE TABLE IF NOT EXISTS station_status (
     station_id      TEXT NOT NULL,
     station_number  TEXT,
     station_name    TEXT,
-    bikes_available INTEGER,
-    docks_available INTEGER,          -- free docks, not total docks
-    status          TEXT,
-    stock_level     TEXT,             -- empty / low / normal / full / overfull
-    is_physical     INTEGER,
-    is_dockless     INTEGER,
+    bikes_total     INTEGER,          -- totalLockedCycleCount
+    bikes_docked    INTEGER,          -- primaryLockedCycleCount: locked in physical docks
+    bikes_temp_lock INTEGER,          -- secondaryLockedCycleCount: temporary lock in station area
+    free_docks      INTEGER,          -- freeDocksCount: free physical docks
+    free_spaces     INTEGER,          -- freeSpacesCount: free virtual spaces in station area
+    stocking_status TEXT,             -- EMPTY / LOW / NORMAL / FULL / OVERFULL
+    station_status  TEXT,             -- OPEN / CLOSED / PLANNED
+    locking_type    TEXT,             -- PHYSICAL / VIRTUAL
+    last_update_at  TEXT,             -- lastUpdateCycleCountAt (UTC): last lock/unlock/manual update
     lat             REAL,
     lon             REAL,
     PRIMARY KEY (poll_id, station_id)
@@ -83,17 +87,20 @@ CREATE INDEX IF NOT EXISTS station_status_station_time
 """
 
 STATION_COLUMNS = (
-    "station_id", "station_number", "station_name", "bikes_available", "docks_available",
-    "status", "stock_level", "is_physical", "is_dockless", "lat", "lon",
+    "station_id", "station_number", "station_name", "bikes_total", "bikes_docked",
+    "bikes_temp_lock", "free_docks", "free_spaces", "stocking_status", "station_status",
+    "locking_type", "last_update_at", "lat", "lon",
 )
 
 
 def fetch(url: str, timeout_seconds: int) -> FetchResult:
-    """GET the station list. Never raises: failures come back as ``error``."""
+    """POST the station search. Never raises: failures come back as ``error``."""
 
     request = urllib.request.Request(
         url,
-        headers={"Origin": ORIGIN, "User-Agent": USER_AGENT, "Accept": "application/json"},
+        data=json.dumps(REQUEST_BODY).encode(),
+        method="POST",
+        headers={"Content-Type": "application/json", "User-Agent": USER_AGENT, "Accept": "application/json"},
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
@@ -104,24 +111,40 @@ def fetch(url: str, timeout_seconds: int) -> FetchResult:
         return FetchResult(None, b"", f"{type(error).__name__}: {error}")
 
 
-def parse_stations(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    """One row per station from the API's ``{"total": n, "results": [...]}``."""
+def _utc_from_millis(value: Any) -> str | None:
+    if value is None:
+        return None
+    return datetime.fromtimestamp(value / 1000, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+
+def parse_stations(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """One row per station from the API's ``{"total": n, "results": [...]}``.
+
+    Raises ``ValueError`` if the page is incomplete (more stations than returned).
+    """
+
+    stations = payload["results"]
+    if payload.get("total", len(stations)) > len(stations):
+        raise ValueError(f"Got {len(stations)} of {payload['total']} stations; raise REQUEST_BODY limit")
     rows = []
-    for station in payload["results"]:
+    for station in stations:
+        centre = station.get("areaCentroid") or {}
         rows.append(
             {
-                "station_id": station["station_id"],
-                "station_number": station.get("number"),
+                "station_id": station["id"],
+                "station_number": station.get("serialNumber"),
                 "station_name": station.get("name"),
-                "bikes_available": station.get("num_vehicles_available"),
-                "docks_available": station.get("num_docks_available"),
-                "status": station.get("status"),
-                "stock_level": station.get("stock_level"),
-                "is_physical": station.get("is_physical"),
-                "is_dockless": station.get("is_dockless"),
-                "lat": station.get("location_lat"),
-                "lon": station.get("location_lon"),
+                "bikes_total": station.get("totalLockedCycleCount"),
+                "bikes_docked": station.get("primaryLockedCycleCount"),
+                "bikes_temp_lock": station.get("secondaryLockedCycleCount"),
+                "free_docks": station.get("freeDocksCount"),
+                "free_spaces": station.get("freeSpacesCount"),
+                "stocking_status": station.get("stationStockingStatus"),
+                "station_status": station.get("stationStatus"),
+                "locking_type": station.get("lockingStationType"),
+                "last_update_at": _utc_from_millis(station.get("lastUpdateCycleCountAt")),
+                "lat": centre.get("latitude"),
+                "lon": centre.get("longitude"),
             }
         )
     return rows

@@ -20,7 +20,7 @@ docker compose -f poller/compose.yaml up -d --build
 - A health check marks the container `unhealthy` if no poll succeeded in the
   last 15 minutes: `docker ps` shows the status, `docker logs <container>`
   shows every poll.
-- Disk: about 3 MB per day (compressed raw responses + parsed rows).
+- Disk: about 4 MB per day (compressed raw responses + parsed rows).
 
 Without compose:
 
@@ -49,31 +49,36 @@ python -m poller.export --db station_status.sqlite3 --out status.csv --since 202
 
 `station_status`: one row per station per successful poll.
 
-| Column | Meaning |
-|---|---|
-| `polled_at` | UTC time of the request, ISO 8601 |
-| `station_id`, `station_number`, `station_name` | station |
-| `bikes_available` | bikes at the station |
-| `docks_available` | **free** docks (total docks are not in the API; ≈ bikes + free docks) |
-| `stock_level` | API's own label: empty / low / normal / full / overfull |
-| `status` | open / … |
-| `is_physical`, `is_dockless` | 8 of 109 stations are virtual (dockless) |
-| `lat`, `lon` | station position |
+| Column | API field | Meaning |
+|---|---|---|
+| `polled_at` | | UTC time of the request, ISO 8601 |
+| `station_id`, `station_number`, `station_name` | `id`, `serialNumber`, `name` | station |
+| `bikes_total` | `totalLockedCycleCount` | bikes at the station |
+| `bikes_docked` | `primaryLockedCycleCount` | bikes locked in physical docks |
+| `bikes_temp_lock` | `secondaryLockedCycleCount` | bikes with a temporary lock in the station area |
+| `free_docks` | `freeDocksCount` | free physical docks (total docks ≈ `bikes_docked + free_docks`) |
+| `free_spaces` | `freeSpacesCount` | free virtual spaces in the station area |
+| `stocking_status` | `stationStockingStatus` | EMPTY / LOW / NORMAL / FULL / OVERFULL |
+| `station_status` | `stationStatus` | OPEN / CLOSED / PLANNED |
+| `locking_type` | `lockingStationType` | PHYSICAL (101) / VIRTUAL (9) |
+| `last_update_at` | `lastUpdateCycleCountAt` | last lock, unlock or manual update (UTC) |
+| `lat`, `lon` | `areaCentroid` | station centre |
 
 `polls`: one row per request: `http_status`, `error` (`NULL` on success) and
-`raw_gzip`, the full response. If parsing ever turns out to be wrong, the raw
-responses can be parsed again.
+`raw_gzip`, the full response. Fields not parsed (e.g. `cyclesInStation`,
+`area`) are kept there and can be extracted later.
 
 ## API notes
 
-- Endpoint: `GET https://serverapp.ratas.tartu.ee/api/map/stations/`, the one
-  the official map (ratas.tartu.ee) uses. It answers only with the header
-  `Origin: https://ratas.tartu.ee`; without it, HTTP 500.
-- The older `https://api.ratas.tartu.ee/cxf/am/station/map/search` endpoint is
-  POST-only and rejects requests without the right body.
-- Not polled yet: `GET .../api/map/station/{station_id}/cycles` lists each bike
-  at a station (serial number, type, battery). That would show rebalancing
-  directly, but costs one request per station (109 per poll).
+- Official public endpoint (from Tartu Smart Bike):
+  `POST https://api.ratas.tartu.ee/cxf/am/station/map/search` with JSON body
+  `{"start": 0, "limit": 500}`. A GET returns 405; an empty or other body
+  returns "Invalid request". If `total` ever exceeds the limit, the poll is
+  recorded as an error.
+- Field meanings: "RR2021 Tartu - Bike share public API explanation" (2021,
+  Estonian). `fullCycleStockingCount` (total docks) from that document is no
+  longer in the response.
+- `cyclesInStation` lists bikes only for a few virtual stations, not per dock.
 
 ## Run locally (without Docker)
 
