@@ -37,7 +37,7 @@ spec:
             - name: poller
               # Pin the digest printed by the image workflow (Actions run log or
               # the package page): ghcr.io/calli-ope/tarcycle-poller:<tag>@sha256:<digest>
-              image: ghcr.io/calli-ope/tarcycle-poller:latest
+              image: ghcr.io/calli-ope/tarcycle-poller:12995962153497e3598d9fb716180a3981493eca@sha256:b12ef83822fcc25355261fac1200074dd1b52e62679c90a8c85cea477628d7c2
               command: ["python", "-m", "poller.once"]
               env:
                 - name: DB_PATH
