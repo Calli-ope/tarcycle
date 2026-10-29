@@ -33,6 +33,31 @@ docker run -d --name tartu-bike-poller --restart unless-stopped \
 Settings (environment variables): `POLL_INTERVAL_SECONDS` (default 300),
 `DB_PATH` (default `/data/station_status.sqlite3` in Docker), `API_URL`.
 
+## Deploy (Kubernetes CronJob)
+
+For a cluster (here: a friend's homelab). `poller/k8s/` holds:
+
+| File | What it does |
+|---|---|
+| `cronjob.yaml` | Every 5 min (UTC) starts a container that runs `python -m poller.once`: one poll (with one retry), saved to SQLite, then exit. Exit status 1 marks the run as failed. Runs as UID 65532, read-only filesystem. |
+| `pvc.yaml` | 2 GiB Longhorn volume for `/data/station_status.sqlite3` (~4 MB/day). |
+| `network-policy.yaml` | Cilium egress rule: only `api.ratas.tartu.ee:443`. |
+| `data-access.yaml` | Temporary pod for copying the database out (commands in the file). |
+
+The image is built and pushed to `ghcr.io/calli-ope/tarcycle-poller` by
+`.github/workflows/poller-image.yml` on every push that changes `poller/`.
+The workflow log prints the digest to pin in `cronjob.yaml`.
+
+```bash
+kubectl create namespace tarcycle        # if the cluster does not create it
+kubectl apply -f poller/k8s/pvc.yaml -f poller/k8s/network-policy.yaml -f poller/k8s/cronjob.yaml
+kubectl -n tarcycle get cronjob,jobs     # a job every 5 min, last success time
+kubectl -n tarcycle logs job/<job-name>  # "Saved 110 stations at ..."
+```
+
+No Docker health check here: the CronJob's job history is the health signal
+(failed jobs are kept, 3 at most).
+
 ## Getting the data out
 
 ```bash

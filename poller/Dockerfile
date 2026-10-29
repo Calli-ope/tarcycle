@@ -6,12 +6,15 @@ FROM python:3.12-slim
 
 # Print logs immediately (visible with `docker logs`) and set defaults that
 # can be overridden with -e / compose `environment:`.
+# PYTHONDONTWRITEBYTECODE: no .pyc files, so a read-only filesystem works.
 ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
     DB_PATH=/data/station_status.sqlite3 \
     POLL_INTERVAL_SECONDS=300
 
-# Run as an unprivileged user that owns only the data folder.
-RUN useradd --create-home poller && mkdir /data && chown poller /data
+# Run as an unprivileged user that owns only the data folder. UID 65532 is
+# the non-root user Kubernetes clusters commonly enforce (runAsUser).
+RUN useradd --uid 65532 --create-home poller && mkdir /data && chown poller /data
 
 WORKDIR /app
 COPY --chown=poller . /app/poller/
@@ -24,4 +27,6 @@ VOLUME /data
 HEALTHCHECK --interval=5m --timeout=10s --start-period=10m \
     CMD python -m poller.health || exit 1
 
+# Default: poll forever (Docker / compose). A Kubernetes CronJob overrides
+# this with `python -m poller.once` (one poll per run).
 CMD ["python", "-m", "poller.run"]

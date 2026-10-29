@@ -135,3 +135,12 @@ def test_export_csv(settings, tmp_path):
     rows = list(csv.DictReader(out.open()))
     assert rows[0]["station_name"] == "AHHAA" and rows[0]["bikes_total"] == "0"
     assert export_csv(settings.db_path, out, since="2999-01-01") == 0
+
+
+@pytest.mark.parametrize("succeeded, status", [(True, 0), (False, 1)])
+def test_poll_once_exit_status(monkeypatch, tmp_path, succeeded, status):
+    from poller import once
+
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "status.sqlite3"))
+    monkeypatch.setattr(once, "poll_once", lambda connection, settings: succeeded)
+    assert once.main() == status

@@ -1,0 +1,64 @@
+# Polls the Tartu Smart Bike station-status API every 5 minutes; each run
+# saves one snapshot of all stations to SQLite on the PVC and exits.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: station-poller
+  namespace: tarcycle
+spec:
+  schedule: "*/5 * * * *"
+  timeZone: Etc/UTC
+  # A run more than 2 minutes late is skipped; the next one is due soon.
+  startingDeadlineSeconds: 120
+  # One writer at a time: the SQLite file is on a ReadWriteOnce volume.
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      # The poller retries once itself (30 s later); the next scheduled run
+      # is the second chance, so Kubernetes does not retry.
+      backoffLimit: 0
+      # Worst case is two 20 s timeouts plus the 30 s retry pause; never
+      # overlap the next run.
+      activeDeadlineSeconds: 240
+      template:
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsUser: 65532
+            runAsGroup: 65532
+            runAsNonRoot: true
+            # Makes the PVC writable for that group.
+            fsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: poller
+              # Pin the digest printed by the image workflow (Actions run log or
+              # the package page): ghcr.io/calli-ope/tarcycle-poller:<tag>@sha256:<digest>
+              image: ghcr.io/calli-ope/tarcycle-poller:latest
+              command: ["python", "-m", "poller.once"]
+              env:
+                - name: DB_PATH
+                  value: /data/station_status.sqlite3
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  cpu: 200m
+                  memory: 128Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+              volumeMounts:
+                - name: data
+                  mountPath: /data
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: station-poller-data

@@ -1,0 +1,15 @@
+# On top of workloads-baseline: the poller only calls the public station API.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: station-poller
+  namespace: tarcycle
+spec:
+  endpointSelector: {}
+  egress:
+    - toFQDNs:
+        - matchName: api.ratas.tartu.ee
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP

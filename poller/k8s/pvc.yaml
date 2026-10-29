@@ -1,0 +1,14 @@
+# The SQLite database. About 4 MB per day (raw gzip responses included), so
+# 2 GiB holds well over a year.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: station-poller-data
+  namespace: tarcycle
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: longhorn
+  resources:
+    requests:
+      storage: 2Gi

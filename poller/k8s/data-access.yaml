@@ -1,0 +1,49 @@
+# Not part of the regular deployment: a temporary pod for copying the data out.
+#   kubectl apply -f data-access.yaml
+#   kubectl -n tarcycle exec station-poller-data-access -- python -c \
+#     "import sqlite3; sqlite3.connect('/data/station_status.sqlite3').backup(sqlite3.connect('/data/backup.sqlite3'))"
+#   kubectl -n tarcycle cp station-poller-data-access:/data/backup.sqlite3 ./station_status.sqlite3
+#   kubectl -n tarcycle exec station-poller-data-access -- rm /data/backup.sqlite3
+#   kubectl delete -f data-access.yaml
+# The backup is a consistent copy even while a poll is writing. The volume is
+# ReadWriteOnce: while this pod holds it, polls can only run on the same node,
+# so the pod stops itself after 10 minutes (delete it when done).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: station-poller-data-access
+  namespace: tarcycle
+spec:
+  restartPolicy: Never
+  activeDeadlineSeconds: 600
+  securityContext:
+    runAsUser: 65532
+    runAsGroup: 65532
+    runAsNonRoot: true
+    fsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: shell
+      image: ghcr.io/calli-ope/tarcycle-poller:latest
+      command: ["sleep", "600"]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+      volumeMounts:
+        - name: data
+          mountPath: /data
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: station-poller-data
