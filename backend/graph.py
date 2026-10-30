@@ -17,7 +17,7 @@ from shapely.geometry import LineString
 ROOT_DIR = Path(__file__).resolve().parent.parent
 GRAPH_FILE = ROOT_DIR / "cache" / "tartu_bike.graphml"
 TERRAIN_DIR = ROOT_DIR / "data"
-OSM_MODEL = "osm_bike_footway_v1"
+OSM_MODEL = "osm_bike_footway_v2"
 TERRAIN_MODEL = "dtm_5m_v2"
 OVERPASS_URLS = (
     "https://overpass-api.de/api",
@@ -40,6 +40,8 @@ BIKE_TAGS_WAY = (
     "surface",
     "bicycle",
 )
+# Whether a crossing has traffic lights is usually on the crossing node.
+JUNCTION_TAGS_NODE = ("crossing", "crossing:signals")
 
 
 class GraphUnavailable(RuntimeError):
@@ -58,6 +60,9 @@ def edge_line(graph: nx.MultiDiGraph, start, end, data: dict) -> LineString:
 def download() -> nx.MultiDiGraph:
     ox.settings.useful_tags_way = list(
         dict.fromkeys([*ox.settings.useful_tags_way, *BIKE_TAGS_WAY])
+    )
+    ox.settings.useful_tags_node = list(
+        dict.fromkeys([*ox.settings.useful_tags_node, *JUNCTION_TAGS_NODE])
     )
     errors = []
     for url in OVERPASS_URLS:
@@ -106,16 +111,24 @@ def add_terrain(graph: nx.MultiDiGraph) -> None:
         data["average_uphill_grade"] = gain / length if length > 0 else 0.0
 
 
-def load_graph() -> nx.MultiDiGraph:
+def load_graph(refresh: bool = False) -> nx.MultiDiGraph:
+    """The cached graph; downloaded if missing, or if outdated and `refresh`.
+
+    The app never refreshes an outdated cache itself, so a busy Overpass
+    server cannot block routing; `python -m backend.graph` does.
+    """
+
     graph = None
     if GRAPH_FILE.exists():
         graph = ox.load_graphml(
             GRAPH_FILE,
             edge_dtypes={"elevation_gain": float, "average_uphill_grade": float},
         )
-    if graph is None or graph.graph.get("osm_model") != OSM_MODEL:
+    if graph is None or (refresh and graph.graph.get("osm_model") != OSM_MODEL):
         graph = download()
         graph.graph["osm_model"] = OSM_MODEL
+    elif graph.graph.get("osm_model") != OSM_MODEL:
+        print("Cached graph is outdated; run `python -m backend.graph` to update it.")
     terrain_model = TERRAIN_MODEL if any(TERRAIN_DIR.glob("*_dtm_5m.tif")) else "none"
     if graph.graph.get("terrain_model") != terrain_model:
         add_terrain(graph)
@@ -126,5 +139,5 @@ def load_graph() -> nx.MultiDiGraph:
 
 
 if __name__ == "__main__":
-    graph = load_graph()
+    graph = load_graph(refresh=True)
     print(f"{GRAPH_FILE}: {graph.number_of_edges()} edges, {graph.graph}")

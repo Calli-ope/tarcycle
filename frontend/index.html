@@ -25,14 +25,17 @@
         </div>
         <div id="address-inputs" hidden>
           <label for="from-address">Start address</label>
-          <input id="from-address" placeholder="e.g. Raekoja plats 1" />
+          <input id="from-address" list="from-suggestions" autocomplete="off" placeholder="e.g. Raekoja plats 1, or click the map" />
+          <datalist id="from-suggestions"></datalist>
           <label for="to-address">Destination address</label>
-          <input id="to-address" placeholder="e.g. Ülikooli 18" />
+          <input id="to-address" list="to-suggestions" autocomplete="off" placeholder="e.g. Ülikooli 18" />
+          <datalist id="to-suggestions"></datalist>
         </div>
         <label>Router</label>
         <div class="mode-switch" role="group" aria-label="Routing backend">
           <button class="mode backend active" data-backend="networkx" type="button">NetworkX</button>
           <button class="mode backend" data-backend="valhalla" type="button">Valhalla</button>
+          <button class="mode backend" data-backend="brouter" type="button">BRouter</button>
         </div>
         <button id="route">Plan route</button>
         <p id="status" role="status"></p>

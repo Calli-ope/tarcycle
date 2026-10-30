@@ -1,10 +1,12 @@
 import json
 import os
+import re
 import threading
 from contextlib import asynccontextmanager
 from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlencode
+from typing import Any
 from urllib.request import Request, urlopen
 
 import networkx as nx
@@ -18,6 +20,7 @@ from .gps_layer import load_gps_ways
 from .graph import TERRAIN_DIR, GraphUnavailable, load_graph
 from .router import NetworkXRouter
 from .stations import load_stations
+from .brouter import BRouterRouter, BRouterUnavailable
 from .valhalla import ValhallaRouter, ValhallaUnavailable
 
 
@@ -35,9 +38,20 @@ COVERAGE_FILES = {
     "summary": "summary.json",
 }
 VALHALLA_URL = os.getenv("TARCYCLE_VALHALLA_URL", "http://127.0.0.1:8002")
+BROUTER_URL = os.getenv("TARCYCLE_BROUTER_URL", "http://127.0.0.1:17777")
+BROUTER_PROFILE = os.getenv("TARCYCLE_BROUTER_PROFILE", "trekking")
+USER_AGENT = {"User-Agent": "Tarcycle/0.1 (cycling research prototype)"}
+# "lat, lon", as typed or set by clicking the map.
+COORDINATES = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$")
+# Autocomplete stays within Tartu (west, south, east, north).
+TARTU_BBOX = "26.60,58.33,26.86,58.43"
 
 
-valhalla = ValhallaRouter(VALHALLA_URL)
+# Engines that run as separate servers; NetworkX is the fallback for both.
+external_engines = {
+    "valhalla": ValhallaRouter(VALHALLA_URL),
+    "brouter": BRouterRouter(BROUTER_URL, BROUTER_PROFILE),
+}
 _router_lock = threading.Lock()
 
 
@@ -88,6 +102,7 @@ def health() -> dict[str, str]:
     return {
         "status": "ok",
         "valhalla_url": VALHALLA_URL,
+        "brouter_url": BROUTER_URL,
         "terrain": "dtm_5m" if any(TERRAIN_DIR.glob("*_dtm_5m.tif")) else "none",
     }
 
@@ -99,8 +114,11 @@ def station_list() -> list[dict[str, int | str | float]]:
 
 @lru_cache(maxsize=128)
 def geocode(address: str) -> tuple[float, float]:
-    """Resolve one Tartu address through Nominatim."""
+    """Resolve one Tartu address through Nominatim, or read "lat, lon"."""
 
+    coordinates = COORDINATES.match(address)
+    if coordinates:
+        return float(coordinates[1]), float(coordinates[2])
     if not address.strip():
         raise HTTPException(status_code=400, detail="Address cannot be empty.")
     params = urlencode(
@@ -108,7 +126,7 @@ def geocode(address: str) -> tuple[float, float]:
     )
     request = Request(
         f"https://nominatim.openstreetmap.org/search?{params}",
-        headers={"User-Agent": "Tarcycle/0.1 (cycling research prototype)"},
+        headers=USER_AGENT,
     )
     try:
         with urlopen(request, timeout=10) as response:
@@ -120,16 +138,45 @@ def geocode(address: str) -> tuple[float, float]:
     return float(results[0]["lat"]), float(results[0]["lon"])
 
 
+@lru_cache(maxsize=512)
+def _suggestions(query: str) -> tuple[dict[str, Any], ...]:
+    params = urlencode({"q": query, "limit": 6, "bbox": TARTU_BBOX})
+    request = Request(f"https://photon.komoot.io/api/?{params}", headers=USER_AGENT)
+    with urlopen(request, timeout=5) as response:
+        features = json.load(response)["features"]
+    suggestions = {}
+    for feature in features:
+        properties = feature["properties"]
+        street = " ".join(
+            filter(None, (properties.get("street"), properties.get("housenumber")))
+        )
+        place = properties.get("district") or properties.get("city")
+        label = ", ".join(dict.fromkeys(filter(None, (properties.get("name"), street, place))))
+        longitude, latitude = feature["geometry"]["coordinates"]
+        suggestions.setdefault(label, {"label": label, "lat": latitude, "lon": longitude})
+    return tuple(suggestions.values())
+
+
+@app.get("/api/suggest")
+def suggest(q: str = Query(..., min_length=3)) -> list[dict[str, Any]]:
+    """Address autocomplete through Photon (Nominatim does not allow it)."""
+
+    try:
+        return list(_suggestions(q.strip().lower()))
+    except (OSError, ValueError, KeyError):
+        return []
+
+
 def route(
     start: tuple[float, float],
     end: tuple[float, float],
     backend: str,
 ) -> dict:
     fallback_reason = None
-    if backend == "valhalla":
+    if backend in external_engines:
         try:
-            return valhalla.route_geojson(*start, *end)
-        except ValhallaUnavailable as error:
+            return external_engines[backend].route_geojson(*start, *end)
+        except (ValhallaUnavailable, BRouterUnavailable) as error:
             fallback_reason = str(error)
     try:
         routes = networkx_router().route_geojson(*start, *end)
@@ -140,7 +187,7 @@ def route(
     if fallback_reason:
         for feature in routes["features"]:
             feature["properties"].update(
-                requested_backend="valhalla",
+                requested_backend=backend,
                 fallback=True,
                 fallback_reason=fallback_reason,
             )
@@ -150,7 +197,7 @@ def route(
 @app.get("/api/route")
 def station_route(
     mode: str = Query("stations", pattern="^(stations|addresses)$"),
-    backend: str = Query("networkx", pattern="^(networkx|valhalla)$"),
+    backend: str = Query("networkx", pattern="^(networkx|valhalla|brouter)$"),
     from_station: int | None = Query(None, alias="from"),
     to_station: int | None = Query(None, alias="to"),
     from_address: str | None = None,

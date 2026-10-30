@@ -1,5 +1,5 @@
-# Optional Valhalla routing server: `docker compose up -d`, then start the app
-# with TARCYCLE_VALHALLA_URL=http://127.0.0.1:8002 (see README).
+# Optional routing engines to compare with NetworkX: `docker compose up -d`
+# (see README). The app expects Valhalla on port 8002 and BRouter on 17777.
 services:
   valhalla:
     image: ghcr.io/valhalla/valhalla-scripted:latest
@@ -20,3 +20,16 @@ services:
       build_admins: "True"
       build_time_zones: "True"
       server_threads: "4"
+
+  brouter:
+    # No release image reads the current (v11) segments yet; nightly pinned by digest.
+    image: ghcr.io/abrensch/brouter@sha256:f1259dbd074ce92084f038cff6bdf33ae73b8a0b2009115c19ead045200de692
+    container_name: tarcycle-brouter
+    ports:
+      - "17777:17777"
+    volumes:
+      # E25_N55.rd5 covers Estonia: https://brouter.de/brouter/segments4/
+      - ./brouter-data/segments4:/segments4
+    environment:
+      MAXTHREADS: "4"
+      JAVA_OPTS: "-Xmx512M -Xms128M -Xmn8M -DmaxRunningTime=300 -DuseRFCMimeType=false"

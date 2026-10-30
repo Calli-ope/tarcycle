@@ -1,223 +1,158 @@
 # Tarcycle
 
-Tarcycle is a small Tartu bicycle-routing prototype. The backend routes with
-its own OSMnx/NetworkX cost model and can optionally use a local Valhalla
-server instead. The MapLibre GL JS frontend displays bike-rack stations from
-`Rattaparklad.csv` and routes between two selected stations.
-
-The planner supports both station-to-station routes and address-to-address
-routes. Address lookup uses OpenStreetMap Nominatim and is cached in memory.
+Bicycle-routing prototype for Tartu. It routes between bike-rack stations
+(`Rattaparklad.csv`), addresses, map clicks or typed coordinates
+(`58.38, 26.72`) with its own OSMnx/NetworkX cost model, or with local Valhalla
+or BRouter servers for comparison. Frontend: MapLibre GL JS; markers can be
+dragged to re-plan. Addresses are looked up with Nominatim (cached) and
+autocompleted with Photon.
 
 ## Run
 
-Install dependencies:
-
 ```powershell
 python -m pip install -r requirements.txt
+python -m backend.graph                      # build the graph once (~1 min, Overpass with mirror fallback)
+python -m uvicorn backend.app:app --reload   # API and frontend at http://127.0.0.1:8000
 ```
 
-Build the routing graph once (downloads Tartu from Overpass, about a minute,
-and tries mirrors if the main server is busy):
+Without the build step, the app builds the graph in the background. When
+`OSM_MODEL` in `backend/graph.py` changes, the app keeps using the old cache so
+a busy Overpass server never blocks routing; run `python -m backend.graph` to
+update it. Tests: `python -m pytest`.
+
+## Valhalla and BRouter (optional)
 
 ```powershell
-python -m backend.graph
-```
-
-Start the complete app from the project root:
-
-```powershell
-python -m uvicorn backend.app:app --reload
-```
-
-Open this URL:
-
-```text
-http://127.0.0.1:8000
-```
-
-The FastAPI server serves both the API and the frontend. You do not need a
-second terminal or a separate frontend server. If you skip the build step,
-the app builds the graph in the background on startup.
-
-## Valhalla (optional)
-
-Start the Valhalla server with Docker. It reuses the tiles in `valhalla-data/`
-and builds them from the Estonia OSM extract the first time:
-
-```powershell
+New-Item -ItemType Directory -Force brouter-data/segments4
+Invoke-WebRequest https://brouter.de/brouter/segments4/E25_N55.rd5 -OutFile brouter-data/segments4/E25_N55.rd5
 docker compose up -d
 ```
 
-Then pick **Valhalla** under "Router" in the page to compare it with NetworkX
-on the same trip. The app expects Valhalla at `http://127.0.0.1:8002`; set
-`TARCYCLE_VALHALLA_URL` to use another address. If Valhalla is not reachable,
-the route falls back to NetworkX and the status line says so. Its bicycle
-costing lives in `BICYCLE_COSTING` in `backend/valhalla.py`. `use_hills` only
-has an effect after building with `build_elevation: "True"` in
-`docker-compose.yml`.
+Pick the engine under "Router" in the page. The app expects Valhalla at
+`http://127.0.0.1:8002` and BRouter at `http://127.0.0.1:17777`
+(`TARCYCLE_VALHALLA_URL`, `TARCYCLE_BROUTER_URL`). If an engine is not
+reachable, NetworkX routes instead and the status line says so.
+
+- **Valhalla** builds tiles from the Estonia extract into `valhalla-data/` on
+  first start. Costing: `BICYCLE_COSTING` in `backend/valhalla.py`;
+  `use_hills` only works after building with `build_elevation: "True"` in
+  `docker-compose.yml`. Alternatives come from `alternates`.
+- **BRouter** uses the `trekking` profile (`TARCYCLE_BROUTER_PROFILE` for
+  another, e.g. `fastbike-verylowtraffic`). Alternatives come from
+  `alternativeidx=1`. No release image reads segment format v11 yet, so the
+  nightly image is pinned by digest; when updating it, download a fresh
+  segment file too.
 
 ## NetworkX routing model
 
-The graph is OSMnx's bicycle network plus every `highway=footway` that does
-not carry `bicycle=no`, with the `cycleway*`, `surface` and `bicycle` tags
-kept. It is cached in `cache/tartu_bike.graphml`.
+**Graph** (`cache/tartu_bike.graphml`): OSMnx's bike network plus every
+footway without `bicycle=no`, keeping the `cycleway*`, `surface` and `bicycle`
+tags. Uphill grades are sampled along each edge from `data/*_dtm_5m.tif` (four
+tiles, central Tartu).
 
-DTM files in `data/` matching `*_dtm_5m.tif` are loaded automatically. Their
-elevation is sampled along OSM edge geometry and cached as uphill grade
-attributes in the graph. The current four tiles cover central Tartu.
+**Edge cost** = length × factors from `RoutingPreferences` in
+`backend/models.py`:
 
-Edge costs are length times factors from `RoutingPreferences` in
-`backend/models.py`: dedicated cycleways (also footways and paths with
-`bicycle=designated`), painted lanes and tracks on roads (`cycleway`,
-`cycleway:left/right/both`), paths, sidewalks, cobblestones, major roads and
-uphill grade. Changing between facility types adds `facility_transition_cost`.
-
-Two rules use the geometry around each way (within 25 m, sampled at a
-quarter, half and three quarters of its length):
-
-- Cycleways beside a primary, secondary, tertiary or trunk road (for example
-  the tracks along Turu and Narva mnt) are priced like painted lanes
-  (`cycleway_factor`), not like standalone cycleways.
-- Footways without `bicycle=yes/designated` beside a road are sidewalks
-  (`sidewalk_factor`; set it to `float("inf")` to forbid them). Footways
-  elsewhere, such as park and riverside paths, are priced as paths.
-
-The search runs A* over edges rather than nodes so that facility transitions
-can be priced; its straight-line estimate never overestimates, so results are
-the same as Dijkstra's. It first finds the shortest route by physical length,
-then the cheapest route under the cost model, and returns the cheapest one if
-it is at most `maximum_detour_factor` (1.5) times longer than the shortest;
-otherwise it returns the shortest.
-
-It also returns an alternative, like a map app: the cheapest route once the
-best route's edges cost `ALTERNATIVE_PENALTY` (3×) more. The alternative is
-dropped if it shares more than `MAXIMUM_SHARED_SHARE` (70 %) of its length
-with the best route or exceeds the detour limit. Valhalla's alternative comes
-from its own `alternates` option. The page draws the alternative in grey;
-click it to switch.
-
-Routing factors must remain non-negative because Dijkstra's algorithm requires
-non-negative edge costs. Keep the factors within about one order of magnitude
-of a plain road (1.0): with a cycleway factor of 0.05 the router zigzagged
-after every short cycleway fragment up to the detour limit.
-
-## GPS traces vs OSM (bike route expansion)
-
-Compares where Smart Bike riders actually ride (GPS traces) with OpenStreetMap
-and with the router's graph, to find the ways riders use that the router
-cannot: the "gaps" (mostly footways, which osmnx's `bike` network leaves out;
-the router has included them since the routing rework, see below).
-
-1. Put the monthly GPS files (`locations_2025MM.csv`, from `Locations 2025.zip`)
-   in `data/raw/Locations/`. `data/raw/` is gitignored: this data is private.
-2. Build the comparison. The full 2025 data (22 files, 16 GB) takes about
-   15 minutes and 2.5 GB of memory; files are read in chunks. The first run
-   also downloads all Tartu OSM ways once:
-
-   ```powershell
-   python -m backend.gps_coverage --locations data/raw/Locations --routes data/raw/Routes/routes_2025.csv
-   ```
-
-   `--routes` is optional; with it, aborted rentals (length 0 or under 2
-   minutes) are dropped. Only `RouteCode`, `Length` and `DurationMinutes` are
-   read from that file.
-
-3. Start the server as above and open <http://127.0.0.1:8000/coverage.html>.
-
-How it works: each trip is cleaned (route breaks, GPS spikes and gaps longer
-than 200 m or 60 s are dropped), its first and last 50 m are trimmed (station
-surroundings), and it is resampled every 5 m and rasterised onto a 10 m grid. Each cell counts distinct trips and riders and is classified by the
-nearest OSM way within 15 m:
-
-| Class | Meaning | What it suggests for OSM |
+| Factor | Applies to | Value |
 |---|---|---|
-| `cycle_infra` | cycleway, cycle lane/track, `bicycle=designated` | nothing, already mapped |
-| `road_no_infra` | a way bikes may use, without cycle infrastructure | busy ones: candidates for cycle infrastructure |
-| `osm_not_bikeable` | footway, steps or `bicycle=no` | check the tagging (e.g. `bicycle=yes`) |
-| `no_osm_way` | no OSM way nearby | a path missing from OSM |
+| Dedicated cycleway | `highway=cycleway`, or path/footway with `bicycle=designated` | 0.5 |
+| Path | path, track, pedestrian, footways away from roads (parks, riverside) | 0.6 |
+| Lane or track | `cycleway*` lane/track/shared on a road; cycleways beside a major road | 0.7 |
+| Sidewalk | footway beside a road without `bicycle=yes/designated` (`float("inf")` forbids) | 1.5 |
+| Calm / fast road | roads only: `maxspeed` ≤ 30 or living street / ≥ 60 or 3+ lanes; untagged = 50 km/h | 0.8 / 1.5 |
+| Cobblestones | `surface=cobblestone/sett` | 2.5 |
+| Major road | primary, secondary, tertiary, trunk | 3.5 |
+| Uphill | average uphill grade g | 1 + g |
+| Popularity | Smart Bike trips on the way, see below | 1 − 0.3·p |
 
-Busy neighbouring cells of the last two classes are grouped into candidate
-segments, ranked by median trips × length. Only cells with at least 10 trips
-and 5 distinct riders are exported (`--min-trips`, `--min-users`), so the
-outputs are aggregated and do not reveal individual trips. Outputs:
-`data/gps_coverage/{cells,edges,candidates}.geojson` and `summary.json`
-(share of ridden distance per class), served at `/api/coverage/{layer}`.
+"Beside" means within 25 m at a quarter, half and three quarters of the way's
+length (e.g. the tracks along Turu and Narva mnt).
 
-### GPS layer for routing
+**Junctions** are priced in metres when passing into the next edge: traffic
+lights (`highway=traffic_signals`, `crossing=traffic_signals` or
+`crossing:signals=yes`) cost the distance ridden in 20 s, an unsignalled
+major-road crossing 60 m, a left turn at a major junction 30 m, and a change of
+facility type 20 m.
 
-`data/gps_coverage/gps_ways.geojson` has one row per OSM way that riders use,
-drawn as its ridden part only: `way_id` (OSM way id), `highway`, `name`,
-`trips` (median Smart Bike trips in 2025), `ridden_m`, `length_m`,
-`covered_share` and `in_bike_graph`. `in_bike_graph=false` means the router's
-graph does not contain the way at all.
-Those "gaps" also get `alongside_share` (fraction within 25 m of a way the
-router has) and `gap_group`:
+**Search**: A* over edges (so transitions can be priced) with an estimate that
+never overestimates, so results equal Dijkstra's. It returns the cheapest route
+if it is at most 1.5× the shortest (`maximum_detour_factor`), otherwise the
+shortest. The alternative is the cheapest route once the best route's edges
+cost 3× more; it is dropped if it shares over 70 % of its length with the best
+route or exceeds the detour limit. The page draws it in grey; click to switch.
 
-| `gap_group` | Meaning | Value for routing |
-|---|---|---|
-| `separate` | < 50% alongside: park, riverside, courtyard, shortcut | a connection the router lacks |
-| `partly` | 50–80% alongside | mixed |
-| `alongside` | ≥ 80% alongside, mostly sidewalks next to roads | none; the router can use the road |
+**Travel time** (`time_minutes`, for a mostly e-bike fleet): 18 km/h, ×0.85 on
+paths, at most 12 km/h on sidewalks, ×0.7 on rough surfaces, slower uphill,
+plus 20 s per traffic light, 8 s per unsignalled major crossing and 5 s per
+left turn. Routes also report the number of `traffic_lights`.
 
-The map (`coverage.html`) has independently switchable layers:
+Keep factors non-negative (Dijkstra requires it) and within about one order of
+magnitude of 1.0: with a cycleway factor of 0.05 the router zigzagged onto
+every short cycleway fragment up to the detour limit.
 
-1. **Router graph**: `router_graph.geojson`, exported from the router's own
-   cached graph (`backend/graph.py`).
-2. **Where riders go**: all ridden ways, coloured by trips.
-3. **Gaps**: green = `separate` + `partly` (gaps the GPS data covers), grey =
-   `alongside` (sidewalks next to router ways).
+## Evaluating route quality
 
-A collapsed "First analysis" section keeps the earlier layers (grid cells,
-candidate zones, trips per edge) for comparison.
-
-These layers can be rebuilt from the saved outputs without the raw GPS data:
-`python -m backend.gps_coverage --from-cache` (about 15 s).
-
-`in_bike_graph` comes from `in_router_network()`, a copy of the router's
-filter (`BIKE_FILTER` in `backend/graph.py`: osmnx's `bike` filter without
-`footway`). If the router's filter changes, update that function to match and
-run `--from-cache --refresh-osm`.
-
-The router uses the layer as a popularity signal: an edge's cost factor is
-multiplied by `1 - popularity_weight × p`, where `p` grows logarithmically
-from 0 at 10 trips to 1 at `popularity_saturation_trips` (5,000) trips in
-2025 (`RoutingPreferences`; `popularity_weight = 0` turns it off). With the
-default weight of 0.3, routes for 40 random station pairs run on ways with at
-least 1,000 trips 74 % of the time instead of 69 %, for 0.7 % more length.
-The join is by OSM way id with `backend/gps_layer.py`:
-
-```python
-from backend.gps_layer import load_gps_ways, edge_gps_trips
-
-gps_ways = load_gps_ways("data/gps_coverage/gps_ways.geojson")  # once
-trips = edge_gps_trips(edge_attributes, gps_ways)                # per edge; None if unridden
+```powershell
+python -m backend.evaluate --pairs 100
 ```
 
-`edges.geojson` (trips per OSM edge) is still written, for comparison with
-earlier runs.
+Routes random station pairs 1–6 km apart with `networkx`, `networkx_no_gps`,
+`shortest` (all factors neutral), `valhalla` and BRouter's `trekking` and
+`fastbike-verylowtraffic` profiles (skipped if a server is not running). Every
+route is matched to the router's graph every 10 m, so all engines are measured
+the same way. Per-route rows go to `data/evaluation/route_quality.csv`: length,
+detour, time, share of length per class (`car_free`, `lane_or_track`,
+`sidewalk`, `quiet_road`, `major_road`, `unmatched`), rough surfaces, popular
+ways (≥ 1,000 trips in 2025) and major-road crossings. Times are each engine's
+own estimate and not comparable. The metrics score the router's own goals, not
+closeness to real GPS traces.
 
-Outputs go to `data/gps_coverage/`. The GPS-derived files there
-(`cells`, `edges`, `candidates`, `gps_ways`, `summary`) are committed so the
-team can use them without the raw data. They only hold counts that passed
-the privacy filter, never individual trips. The large OSM reference files
-(`osm_edges.gpkg`, `study_area.geojson`, `osm_cycleways.geojson`) are
-gitignored and downloaded again when needed.
+Means over 99 routable pairs:
 
-### Results (2025)
+| Engine | Length (m) | Detour | Car-free | Lane/track | Sidewalk | Quiet road | Major road | Rough | Popular | Major crossings |
+|---|---|---|---|---|---|---|---|---|---|---|
+| networkx | 4,620 | 1.15 | 55 % | 24 % | 3 % | 12 % | 1.0 % | 3.8 % | 72 % | 4.8 |
+| networkx_no_gps | 4,560 | 1.13 | 59 % | 21 % | 4 % | 11 % | 0.2 % | 4.7 % | 64 % | 5.1 |
+| shortest | 4,040 | 1.00 | 23 % | 18 % | 11 % | 17 % | 25.2 % | 5.0 % | 60 % | 3.3 |
+| valhalla | 4,240 | 1.08 | 22 % | 30 % | 0.1 % | 25 % | 13.3 % | 1.3 % | 71 % | 4.9 |
+| brouter_trekking | 4,200 | 1.06 | 21 % | 35 % | 0.8 % | 25 % | 9.6 % | 2.8 % | 75 % | 6.2 |
+| brouter_low_traffic | 4,280 | 1.09 | 12 % | 25 % | 0.6 % | 39 % | 14.8 % | 2.2 % | 68 % | 3.4 |
 
-From 660,556 real trips (aborted rentals dropped), with no
-`locations_202510_1.csv` (first part of October missing from the data):
+## GPS traces vs OSM
 
-- 94.8% of ridden distance is on ways in the router graph, 4.6% on other OSM
-  ways (mostly footways), 0.6% where OSM has no way.
-- Ridden ways missing from the router graph: 162 km. Of the riding on them,
-  43% is on paths away from router ways (`separate` + `partly`, 71 km) and
-  57% on sidewalks alongside router ways (91 km).
+Compares where Smart Bike riders ride with OSM and the router's graph, to find
+ways riders use that the router lacks and to give the router a popularity
+signal. The raw data is private and stays in `data/raw/` (gitignored).
 
-Known limitations: OSM pedestrian squares mapped as areas are not ways, so
-riding across them shows up as `no_osm_way`. Counts are Smart Bike trips
-only, not all cyclists.
-Candidates should be checked on the ground (or on imagery) before anything is
-edited in OSM. Do not upload the traces themselves to OSM.
+```powershell
+# Monthly locations_2025MM.csv files (from "Locations 2025.zip") in data/raw/Locations/.
+# 22 files, 16 GB: ~15 min and 2.5 GB of memory, read in chunks.
+python -m backend.gps_coverage --locations data/raw/Locations --routes data/raw/Routes/routes_2025.csv
+python -m backend.gps_coverage --from-cache   # rebuild the layers without the raw data (~15 s)
+```
 
-Tests: `python -m pytest`.
+`--routes` is optional and drops aborted rentals (length 0 or under 2 minutes).
+The map is at <http://127.0.0.1:8000/coverage.html>. Pipeline, gap groups,
+decisions and debugging notes: [docs/gps-coverage.md](docs/gps-coverage.md).
+
+Trips are cleaned, trimmed by 50 m at each end and rasterised onto a 10 m grid;
+only cells with ≥ 10 trips and ≥ 5 riders are exported (`--min-trips`,
+`--min-users`). The outputs in `data/gps_coverage/` (`cells`, `edges`,
+`candidates`, `gps_ways` and `summary.json`, served at `/api/coverage/{layer}`)
+hold only these privacy-filtered counts and are committed.
+
+`gps_ways.geojson` has one row per ridden OSM way: `way_id`, `trips` (median
+Smart Bike trips in 2025), `in_bike_graph`, and for ways missing from the
+router graph a `gap_group` (`separate`, `partly`, `alongside`). The router
+joins `trips` onto edges by way id (`backend/gps_layer.py`) for the popularity
+factor: `p` grows logarithmically from 0 at 10 trips to 1 at 5,000, and
+`popularity_weight = 0` turns it off. `in_bike_graph` uses a copy of
+`BIKE_FILTER`; if the filter changes, update `in_router_network()` and run
+`--from-cache --refresh-osm`.
+
+**Results (2025)**: 660,556 trips (first part of October missing). 94.8 % of
+ridden distance is on router-graph ways, 4.6 % on other OSM ways (mostly
+footways), 0.6 % where OSM has no way. Ridden ways missing from the graph:
+162 km, of which 71 km are real gaps (`separate` + `partly`) and 91 km
+sidewalks alongside router ways. Counts are Smart Bike trips only. Check
+candidates on the ground before editing OSM, and never upload the traces.
