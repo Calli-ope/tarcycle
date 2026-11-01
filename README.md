@@ -108,24 +108,32 @@ python -m backend.evaluate --pairs 100
 Routes random station pairs 1–6 km apart with `networkx`, `networkx_no_gps`,
 `shortest` (all factors neutral), `valhalla` and BRouter's `trekking` and
 `fastbike-verylowtraffic` profiles (skipped if a server is not running). Every
-route is matched to the router's graph every 10 m, so all engines are measured
-the same way. Per-route rows go to `data/evaluation/route_quality.csv`: length,
-detour, time, share of length per class (`car_free`, `lane_or_track`,
-`sidewalk`, `quiet_road`, `major_road`, `unmatched`), rough surfaces, popular
-ways (≥ 1,000 trips in 2025) and major-road crossings. Times are each engine's
-own estimate and not comparable. The metrics score the router's own goals, not
-closeness to real GPS traces.
+route is matched to the router's graph every 10 m, so all engines are measured the
+same way. Rows go to `data/evaluation/route_quality.csv`, the comparison with paired
+differences and 95 % intervals to `data/evaluation/summary.md`. Routes over 5 % off
+the network or beyond the 1.5× detour limit count as invalid and are left out.
 
-Means over 99 routable pairs:
+Stress is the share of the route at Level of Traffic Stress 3–4 (Mekuria, Furth &
+Nixon 2012, from OSM tags). Time uses one speed model for all engines. Means over
+100 pairs the router was not tuned on (`--seed 2`):
 
-| Engine | Length (m) | Detour | Car-free | Lane/track | Sidewalk | Quiet road | Major road | Rough | Popular | Major crossings |
-|---|---|---|---|---|---|---|---|---|---|---|
-| networkx | 4,620 | 1.15 | 55 % | 24 % | 3 % | 12 % | 1.0 % | 3.8 % | 72 % | 4.8 |
-| networkx_no_gps | 4,560 | 1.13 | 59 % | 21 % | 4 % | 11 % | 0.2 % | 4.7 % | 64 % | 5.1 |
-| shortest | 4,040 | 1.00 | 23 % | 18 % | 11 % | 17 % | 25.2 % | 5.0 % | 60 % | 3.3 |
-| valhalla | 4,240 | 1.08 | 22 % | 30 % | 0.1 % | 25 % | 13.3 % | 1.3 % | 71 % | 4.9 |
-| brouter_trekking | 4,200 | 1.06 | 21 % | 35 % | 0.8 % | 25 % | 9.6 % | 2.8 % | 75 % | 6.2 |
-| brouter_low_traffic | 4,280 | 1.09 | 12 % | 25 % | 0.6 % | 39 % | 14.8 % | 2.2 % | 68 % | 3.4 |
+| Engine | Valid | Detour | Time (min) | Stress | Major road | Unsignalled /km | Signals /km | Rough | Turns /km |
+|---|---|---|---|---|---|---|---|---|---|
+| networkx | 100 % | 1.17 | 16.7 | 3.4 % | 0.3 % | 0.51 | 0.60 | 3.1 % | 3.5 |
+| networkx_no_gps | 100 % | 1.15 | 16.6 | 2.7 % | 0.3 % | 0.51 | 0.60 | 4.0 % | 3.7 |
+| shortest | 100 % | 1.00 | 15.5 | 26.9 % | 27.1 % | 0.22 | 1.20 | 3.4 % | 2.8 |
+| valhalla | 99 % | 1.10 | 15.8 | 14.5 % | 14.6 % | 0.33 | 1.17 | 0.9 % | 2.6 |
+| brouter_trekking | 99 % | 1.09 | 15.9 | 10.1 % | 8.6 % | 0.35 | 1.26 | 2.1 % | 2.6 |
+| brouter_low_traffic | 97 % | 1.11 | 15.8 | 23.3 % | 18.9 % | 0.23 | 0.99 | 1.9 % | 2.1 |
+
+NetworkX has by far the least traffic stress, and pays for it: compared with
+Valhalla, 6.7 points more detour (95 % interval 4.0–9.3), a minute longer, 0.9 more
+turns per km and 0.17 more unsignalled crossings per km. Popularity adds 2.6 points
+of detour (1.4–4.2) with no gain in stress, for slightly fewer rough stretches and
+turns.
+
+Limits: a junction passed while riding on a major road is not counted as a
+crossing (stress covers that riding), which flatters engines using major roads.
 
 ## GPS traces vs OSM
 
