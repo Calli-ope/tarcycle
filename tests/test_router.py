@@ -1,6 +1,8 @@
 import networkx as nx
 import pytest
+from shapely.geometry import LineString
 
+from backend.graph import add_contraflow
 from backend.router import NetworkXRouter, OutsideNetwork
 
 
@@ -46,3 +48,20 @@ def test_point_far_from_the_network_has_no_route():
     router = NetworkXRouter(road_graph())
     with pytest.raises(OutsideNetwork, match="from the bicycle network"):
         router.route_geojson(*START, LAT + 0.05, LON)
+
+
+def test_contraflow_adds_the_reverse_of_ways_open_to_bikes_both_ways():
+    graph = nx.MultiDiGraph()
+    line = LineString([(0, 0), (1, 1)])
+    graph.add_edge("a", "b", **{"oneway:bicycle": "no"}, geometry=line, length=5.0)
+    graph.add_edge("b", "c", cycleway="opposite_lane", length=5.0)
+    graph.add_edge("c", "d", length=5.0)
+    graph.add_edge("d", "e", **{"bicycle:backward": "yes"}, length=5.0)
+    graph.add_edge("e", "f", **{"bicycle:backward": "no"}, length=5.0)
+    add_contraflow(graph)
+    assert graph.has_edge("b", "a")
+    assert list(graph.edges["b", "a", 0]["geometry"].coords) == [(1, 1), (0, 0)]
+    assert graph.has_edge("c", "b")
+    assert not graph.has_edge("d", "c")
+    assert graph.has_edge("e", "d")
+    assert not graph.has_edge("f", "e")

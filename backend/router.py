@@ -14,12 +14,11 @@ from shapely.geometry import Point
 from shapely.ops import substring
 
 from .gps_layer import GpsWay, edge_gps_trips
-from .graph import edge_line
+from .graph import CYCLEWAY_KEYS, edge_line
 from .models import RoutingPreferences
 
 
 Edge = tuple[Any, Any, Any]
-CYCLEWAY_KEYS = ("cycleway", "cycleway:left", "cycleway:right", "cycleway:both")
 MAJOR_ROADS = ("primary", "secondary", "tertiary", "trunk")
 NOT_ROADS = ("cycleway", "path", "footway", "pedestrian", "track", "steps", "bridleway")
 ROUGH_SURFACES = ("cobblestone", "sett", "unpaved", "gravel", "dirt", "ground", "grass", "sand")

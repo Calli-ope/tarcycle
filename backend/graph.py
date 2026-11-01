@@ -21,7 +21,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 GRAPH_FILE = ROOT_DIR / "cache" / "tartu_bike.graphml"
 TERRAIN_DIR = ROOT_DIR / "data"
 STATIONS_FILE = ROOT_DIR / "data" / "Rattaparklad.csv"
-OSM_MODEL = "osm_bike_footway_v4"
+OSM_MODEL = "osm_bike_footway_v5"
 PLACE = "Tartu, Estonia"
 # Around the convex hull of all stations, so routes can leave it a little.
 NETWORK_BUFFER_M = 1500.0
@@ -31,6 +31,7 @@ OVERPASS_URLS = (
     "https://overpass.private.coffee/api",
     "https://overpass.kumi.systems/api",
 )
+CYCLEWAY_KEYS = ("cycleway", "cycleway:left", "cycleway:right", "cycleway:both")
 # osmnx's "bike" filter with "footway" removed from the excluded highway types:
 # footways stay unless they carry bicycle=no.
 BIKE_FILTER = (
@@ -46,6 +47,8 @@ BIKE_TAGS_WAY = (
     "cycleway:both",
     "surface",
     "bicycle",
+    "oneway:bicycle",
+    "bicycle:backward",
 )
 # Whether a crossing has traffic lights is usually on the crossing node.
 JUNCTION_TAGS_NODE = ("crossing", "crossing:signals")
@@ -80,6 +83,22 @@ def network_area() -> Polygon:
     )
 
 
+def add_contraflow(graph: nx.MultiDiGraph) -> None:
+    """OSMnx only reads `oneway`; add the reverse of ways open to bikes both ways."""
+
+    for start, end, data in list(graph.edges(data=True)):
+        contraflow = (
+            "no" in str(data.get("oneway:bicycle", ""))
+            or "yes" in str(data.get("bicycle:backward", ""))
+            or any("opposite" in str(data.get(key, "")) for key in CYCLEWAY_KEYS)
+        )
+        if contraflow and not graph.has_edge(end, start):
+            reverse = dict(data)
+            if isinstance(data.get("geometry"), LineString):
+                reverse["geometry"] = LineString(data["geometry"].coords[::-1])
+            graph.add_edge(end, start, **reverse)
+
+
 def download() -> nx.MultiDiGraph:
     ox.settings.useful_tags_way = list(
         dict.fromkeys([*ox.settings.useful_tags_way, *BIKE_TAGS_WAY])
@@ -94,9 +113,11 @@ def download() -> nx.MultiDiGraph:
         # Only the main instance answers /status reliably.
         ox.settings.overpass_rate_limit = url == OVERPASS_URLS[0]
         try:
-            return ox.graph_from_polygon(
+            graph = ox.graph_from_polygon(
                 area, network_type="bike", custom_filter=BIKE_FILTER
             )
+            add_contraflow(graph)
+            return graph
         except Exception as error:  # Overpass mirrors fail in many different ways.
             errors.append(f"{url}: {error}")
     raise GraphUnavailable("OSM download failed. " + " | ".join(errors))

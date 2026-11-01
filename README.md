@@ -47,7 +47,9 @@ reachable, NetworkX routes instead and the status line says so.
 
 **Graph** (`cache/tartu_bike.graphml`): OSMnx's bike network plus every
 footway without `bicycle=no`, over Tartu and the convex hull of all stations plus
-1.5 km, as some stations are in villages outside the city. Uphill grades are
+1.5 km, as some stations are in villages outside the city. One-way ways open to
+bikes both ways (`oneway:bicycle=no`, `bicycle:backward=yes`, contraflow
+`cycleway*`) get a reverse edge, which OSMnx would not add. Uphill grades are
 sampled along each edge from `data/*_dtm_5m.tif` (four tiles, central Tartu).
 
 **Edge cost** = length × factors from `RoutingPreferences` in
