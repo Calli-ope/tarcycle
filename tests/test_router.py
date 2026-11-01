@@ -9,6 +9,8 @@ from backend.router import NetworkXRouter, OutsideNetwork
 LAT, LON = 58.38, 26.72
 START = (LAT - 0.001, LON)
 END = (LAT + 0.010, LON)
+# The two stubs joining START and END to the network, as straight-line connectors.
+STUBS_M = 2 * 111.3
 
 
 def road_graph() -> nx.MultiDiGraph:
@@ -42,6 +44,23 @@ def road_graph() -> nx.MultiDiGraph:
     both_ways("start", "a", 111.0, highway="residential")
     both_ways("b", "end", 111.0, highway="residential")
     return graph
+
+
+def test_route_over_the_detour_limit_keeps_what_preference_fits():
+    router = NetworkXRouter(road_graph())
+    # Without the limit the cycleway would win; the major road is what the old
+    # fallback to the shortest route chose.
+    route = router.route_geojson(*START, *END)["features"][0]
+    assert route["properties"]["route_length_m"] == pytest.approx(1300.0 + STUBS_M, abs=2)
+
+
+def test_route_within_the_detour_limit_is_the_preferred_one():
+    graph = road_graph()
+    for _, _, data in graph.edges(data=True):
+        if data["highway"] == "cycleway":
+            data["length"] = 700.0
+    route = NetworkXRouter(graph).route_geojson(*START, *END)["features"][0]
+    assert route["properties"]["route_length_m"] == pytest.approx(1400.0 + STUBS_M, abs=2)
 
 
 def test_point_far_from_the_network_has_no_route():

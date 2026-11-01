@@ -42,6 +42,10 @@ MAXIMUM_SHARED_SHARE = 0.7
 # Further from the network than this, the connector to the nearest edge would be
 # a straight line across whatever lies between.
 MAXIMUM_SNAP_M = 300.0
+# A route over the detour limit is searched again with each metre costing this
+# much more (bisected): enough to give the shortest route up to the worst factors.
+MAXIMUM_LENGTH_SURCHARGE = 8.0
+SURCHARGE_STEPS = 6
 
 
 class OutsideNetwork(nx.NetworkXNoPath):
@@ -431,22 +435,38 @@ class NetworkXRouter:
         shortest = self._search(
             start_offsets, end_offsets, lambda _previous, edge: self.length[edge], 0.98
         )
-        preferred = self._search(
-            start_offsets, end_offsets, self._preferred_weight, self.minimum_factor
-        )
+
+        def preferred(surcharge: float, used: frozenset[Edge] = frozenset()):
+            return self._search(
+                start_offsets,
+                end_offsets,
+                lambda previous, edge: (
+                    self._preferred_weight(previous, edge)
+                    + surcharge * self.length[edge]
+                )
+                * (ALTERNATIVE_PENALTY if edge in used else 1.0),
+                self.minimum_factor + 0.98 * surcharge,
+            )
+
         shortest_length = total_length(shortest)
         maximum_length = shortest_length * self.preferences.maximum_detour_factor
-        best = preferred if total_length(preferred) <= maximum_length else shortest
+        best, surcharge = preferred(0.0), 0.0
+        if total_length(best) > maximum_length:
+            # Keep as much of the preference as the limit allows: the smallest
+            # surcharge that fits (length only falls as the surcharge rises).
+            best, surcharge = shortest, MAXIMUM_LENGTH_SURCHARGE
+            low, high = 0.0, MAXIMUM_LENGTH_SURCHARGE
+            for _ in range(SURCHARGE_STEPS):
+                middle = (low + high) / 2
+                candidate = preferred(middle)
+                if total_length(candidate) <= maximum_length:
+                    best, surcharge, high = candidate, middle, middle
+                else:
+                    low = middle
         routes = [best]
         # Alternative: the cheapest route once the best one's edges cost more.
-        used = set(best[0])
-        alternative = self._search(
-            start_offsets,
-            end_offsets,
-            lambda previous, edge: self._preferred_weight(previous, edge)
-            * (ALTERNATIVE_PENALTY if edge in used else 1.0),
-            self.minimum_factor,
-        )
+        used = frozenset(best[0])
+        alternative = preferred(surcharge, used)
         shared = sum(self.length[edge] for edge in alternative[0] if edge in used)
         alternative_length = total_length(alternative)
         if (

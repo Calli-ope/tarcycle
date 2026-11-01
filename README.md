@@ -78,9 +78,10 @@ facility type 20 m.
 
 **Search**: A* over edges (so transitions can be priced) with an estimate that
 never overestimates, so results equal Dijkstra's. It returns the cheapest route
-if it is at most 1.5× the shortest (`maximum_detour_factor`), otherwise the
-shortest. A point over 300 m from the network gets an error rather than a straight
-line across the gap. The
+if it is at most 1.5× the shortest (`maximum_detour_factor`); otherwise it searches
+again with a surcharge per metre, bisected to the smallest that fits, so a route
+over the limit keeps as much of the preference as it can. A point over 300 m from
+the network gets an error rather than a straight line across the gap. The
 alternative is the cheapest route once the best route's edges cost 3× more; it is
 dropped if it shares over 70 % of its length with the best route or exceeds the
 detour limit. The page draws it in grey; click to switch.
