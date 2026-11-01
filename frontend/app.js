@@ -22,6 +22,7 @@ const map = new maplibregl.Map({
 const fromSelect = document.querySelector("#from");
 const toSelect = document.querySelector("#to");
 const status = document.querySelector("#status");
+const directions = document.querySelector("#directions");
 let mode = "stations";
 let backend = "networkx";
 let hasRoute = false;
@@ -79,6 +80,27 @@ function routeSummary(feature) {
   return `${(route_length_m / 1000).toFixed(2)} km${time}${lights}`;
 }
 
+function distanceText(metres) {
+  return metres >= 1000 ? `${(metres / 1000).toFixed(1)} km` : `${Math.round(metres)} m`;
+}
+
+// BRouter returns no instructions, so the list can be empty.
+function showDirections(steps = []) {
+  directions.hidden = !steps.length;
+  directions.replaceChildren(
+    ...steps.map(({ instruction, length_m }) => {
+      const item = document.createElement("li");
+      item.textContent = instruction;
+      if (length_m) {
+        const distance = document.createElement("span");
+        distance.textContent = ` ${distanceText(length_m)}`;
+        item.append(distance);
+      }
+      return item;
+    }),
+  );
+}
+
 function showRoute(selected) {
   map.getSource(routeSource).setData({
     type: "FeatureCollection",
@@ -92,6 +114,7 @@ function showRoute(selected) {
   const others = routes.filter((_, index) => index !== selected).map(routeSummary);
   const alternative = others.length ? ` Alternative (grey, click to switch): ${others.join(", ")}.` : "";
   status.textContent = `${routeSummary(routes[selected])}, routed with ${via}.${alternative}`;
+  showDirections(routes[selected].properties.directions);
 }
 
 function setBackend(nextBackend) {
@@ -166,6 +189,7 @@ async function planRoute() {
     return;
   }
   status.textContent = "Calculating route...";
+  showDirections();
   const query = new URLSearchParams({ mode, backend });
   if (mode === "stations") {
     query.set("from", fromSelect.value);

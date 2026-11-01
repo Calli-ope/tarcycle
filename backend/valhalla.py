@@ -63,7 +63,7 @@ class ValhallaRouter:
             ],
             "costing": "bicycle",
             "costing_options": {"bicycle": BICYCLE_COSTING},
-            "directions_type": "none",
+            "directions_type": "instructions",
             "alternates": 1,
         }
         request = Request(
@@ -93,6 +93,14 @@ class ValhallaRouter:
                 "node_count": len(coordinates),
                 "route_length_m": round(trip["summary"]["length"] * 1000, 1),
                 "time_minutes": round(trip["summary"]["time"] / 60, 1),
+                "directions": [
+                    {
+                        "instruction": maneuver["instruction"],
+                        "length_m": round(maneuver["length"] * 1000, 1),
+                    }
+                    for leg in trip["legs"]
+                    for maneuver in leg["maneuvers"]
+                ],
             },
             "geometry": {"type": "LineString", "coordinates": coordinates},
         }

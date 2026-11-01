@@ -46,6 +46,11 @@ MAXIMUM_SNAP_M = 300.0
 # much more (bisected): enough to give the shortest route up to the worst factors.
 MAXIMUM_LENGTH_SURCHARGE = 8.0
 SURCHARGE_STEPS = 6
+# Directions: stretches shorter than this (often a crossing) get no instruction,
+# and a bend on the same way is only mentioned from this angle.
+MINIMUM_STRETCH_M = 20.0
+SHARP_BEND_DEGREES = 60.0
+COMPASS = ("east", "northeast", "north", "northwest", "west", "southwest", "south", "southeast")
 
 
 class OutsideNetwork(nx.NetworkXNoPath):
@@ -147,6 +152,18 @@ def edge_speed(
 
 def _bearing(start: tuple[float, ...], end: tuple[float, ...], x_scale: float) -> float:
     return math.degrees(math.atan2(end[1] - start[1], (end[0] - start[0]) * x_scale))
+
+
+def _turn_words(turn: float) -> str:
+    """Instruction for a change of bearing; positive turns are to the left."""
+
+    side = "left" if turn > 0 else "right"
+    size = abs(turn)
+    if size < 30:
+        return "Continue"
+    if size < 60:
+        return f"Bear {side}"
+    return f"Turn {side}" if size < 120 else f"Make a sharp {side}"
 
 
 class NetworkXRouter:
@@ -279,7 +296,7 @@ class NetworkXRouter:
         ]
 
     def _snap(self, latitude: float, longitude: float):
-        """Map both ends of the nearest edge to (distance, connector from point)."""
+        """Map both ends of the nearest edge to (distance, connector from point, edge)."""
 
         point = Point(longitude, latitude)
         scaled = self._scaled(point)
@@ -307,6 +324,7 @@ class NetworkXRouter:
                     )
                 ),
                 connector,
+                edge,
             )
             for node, connector in connectors.items()
         }
@@ -330,6 +348,58 @@ class NetworkXRouter:
             cost += preferences.left_turn_cost
             delay += LEFT_TURN_DELAY_S
         return cost, delay
+
+    def _way_label(self, edge: Edge) -> str:
+        name = self.graph.edges[edge].get("name")
+        if isinstance(name, (list, tuple)):
+            name = name[0]
+        if name:
+            return str(name)
+        if edge in self.sidewalks:
+            return "the sidewalk"
+        highway = _as_text(self.graph.edges[edge].get("highway"))
+        if "cycleway" in highway:
+            return "the cycleway"
+        return "the path" if _has_any(highway, NOT_ROADS) else "the road"
+
+    def _directions(self, route: list[Edge], lead_in: tuple, lead_out: tuple) -> list[dict[str, Any]]:
+        """Instructions from the route's own edges and the stretches of the ways it
+        starts and ends on; a lead is (way, coordinates in riding direction, metres)."""
+
+        def lead(way, coordinates, length) -> list[tuple]:
+            if len(set(coordinates)) < 2:
+                return []
+            start = _bearing(*coordinates[:2], self.x_scale)
+            return [(way, length, start, _bearing(*coordinates[-2:], self.x_scale))]
+
+        pieces = [
+            *lead(*lead_in),
+            *((e, self.length[e], self.bearing_start[e], self.bearing_end[e]) for e in route),
+            *lead(*lead_out),
+        ]
+        steps: list[dict[str, Any]] = []
+        label = heading = None
+        for way, length, start, end in pieces:
+            if steps and length < MINIMUM_STRETCH_M:
+                steps[-1]["length_m"] += length
+                continue
+            turn = 0.0 if heading is None else (start - heading + 180) % 360 - 180
+            heading = end
+            next_label = self._way_label(way)
+            if not steps:
+                instruction = f"Head {COMPASS[round(start / 45) % 8]} on {next_label}"
+            elif next_label != label:
+                instruction = f"{_turn_words(turn)} onto {next_label}"
+            elif abs(turn) >= SHARP_BEND_DEGREES:
+                instruction = f"{_turn_words(turn)} to stay on {next_label}"
+            else:
+                steps[-1]["length_m"] += length
+                continue
+            label = next_label
+            steps.append({"instruction": f"{instruction}.", "length_m": length})
+        for step in steps:
+            step["length_m"] = round(step["length_m"], 1)
+        return [*steps, {"instruction": "You have arrived.", "length_m": 0.0}]
 
     def _preferred_weight(self, previous: Edge | None, edge: Edge) -> float:
         if previous is None:
@@ -532,6 +602,11 @@ class NetworkXRouter:
                     ),
                     "shortest_viable_route_length_m": round(shortest_length, 1),
                     "maximum_detour_factor": self.preferences.maximum_detour_factor,
+                    "directions": self._directions(
+                        route,
+                        (starts[start][2], starts[start][1], start_offsets[start]),
+                        (ends[end][2], ends[end][1][::-1], end_offsets[end]),
+                    ),
                 },
                 "geometry": {"type": "LineString", "coordinates": coordinates},
             }

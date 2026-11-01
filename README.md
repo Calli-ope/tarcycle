@@ -3,9 +3,9 @@
 Bicycle-routing prototype for Tartu. It routes between bike-rack stations
 (`Rattaparklad.csv`), addresses, map clicks or typed coordinates
 (`58.38, 26.72`) with its own OSMnx/NetworkX cost model, or with local Valhalla
-or BRouter servers for comparison. Frontend: MapLibre GL JS; markers can be
-dragged to re-plan. Addresses are looked up with Nominatim (cached) and
-autocompleted with Photon.
+or BRouter servers for comparison, and lists turn-by-turn directions. Frontend:
+MapLibre GL JS; markers can be dragged to re-plan. Addresses are looked up with
+Nominatim (cached) and autocompleted with Photon.
 
 ## Run
 
@@ -31,7 +31,8 @@ docker compose up -d
 Pick the engine under "Router" in the page. The app expects Valhalla at
 `http://127.0.0.1:8002` and BRouter at `http://127.0.0.1:17777`
 (`TARCYCLE_VALHALLA_URL`, `TARCYCLE_BROUTER_URL`). If an engine is not
-reachable, NetworkX routes instead and the status line says so.
+reachable, NetworkX routes instead and the status line says so. Valhalla's
+directions are its own, and BRouter's profile returns none here.
 
 - **Valhalla** builds tiles from the Estonia extract into `valhalla-data/` on
   first start. Costing: `BICYCLE_COSTING` in `backend/valhalla.py`;
@@ -85,6 +86,9 @@ the network gets an error rather than a straight line across the gap. The
 alternative is the cheapest route once the best route's edges cost 3× more; it is
 dropped if it shares over 70 % of its length with the best route or exceeds the
 detour limit. The page draws it in grey; click to switch.
+
+**Directions** come from the route's own edges and way names, so they match the
+line on the map. Stretches under 20 m get no instruction.
 
 **Travel time** (`time_minutes`, for a mostly e-bike fleet): 18 km/h, ×0.85 on
 paths, at most 12 km/h on sidewalks, ×0.7 on rough surfaces, slower uphill,

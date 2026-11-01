@@ -69,6 +69,54 @@ def test_point_far_from_the_network_has_no_route():
         router.route_geojson(*START, LAT + 0.05, LON)
 
 
+def directions_graph() -> nx.MultiDiGraph:
+    """Riia east to a junction, left into Pargi, ahead over a short unnamed
+    crossing onto more of Pargi, then right onto a cycleway."""
+
+    graph = nx.MultiDiGraph(crs="EPSG:4326")
+    nodes = {
+        "start": (LON, LAT),
+        "junction": (LON + 0.01, LAT),
+        "south": (LON + 0.01, LAT - 0.002),
+        "kerb": (LON + 0.01, LAT + 0.004),
+        "kerb2": (LON + 0.01, LAT + 0.00415),
+        "corner": (LON + 0.01, LAT + 0.008),
+        "end": (LON + 0.016, LAT + 0.008),
+        "park": (LON, LAT + 0.02),
+    }
+    for name, (x, y) in nodes.items():
+        graph.add_node(name, x=x, y=y)
+    for start, end, length, tags in (
+        ("start", "junction", 580.0, {"highway": "residential", "name": "Riia"}),
+        ("junction", "south", 222.0, {"highway": "residential", "name": "Pargi"}),
+        ("junction", "kerb", 445.0, {"highway": "residential", "name": "Pargi"}),
+        ("kerb", "kerb2", 17.0, {"highway": "path"}),
+        ("kerb2", "corner", 428.0, {"highway": "residential", "name": "Pargi"}),
+        ("corner", "end", 350.0, {"highway": "cycleway"}),
+        ("start", "park", 2000.0, {"highway": "footway"}),
+    ):
+        graph.add_edge(start, end, length=length, **tags)
+        graph.add_edge(end, start, length=length, **tags)
+    return graph
+
+
+def test_directions_follow_the_route():
+    route = NetworkXRouter(directions_graph()).route_geojson(
+        LAT, LON + 0.005, LAT + 0.008, LON + 0.013
+    )["features"][0]
+    steps = route["properties"]["directions"]
+    assert [step["instruction"] for step in steps] == [
+        "Head east on Riia.",
+        "Turn left onto Pargi.",
+        "Turn right onto the cycleway.",
+        "You have arrived.",
+    ]
+    assert steps[1]["length_m"] == pytest.approx(890, abs=5)
+    assert sum(step["length_m"] for step in steps) == pytest.approx(
+        route["properties"]["route_length_m"], abs=1
+    )
+
+
 def test_contraflow_adds_the_reverse_of_ways_open_to_bikes_both_ways():
     graph = nx.MultiDiGraph()
     line = LineString([(0, 0), (1, 1)])

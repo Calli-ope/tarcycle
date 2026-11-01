@@ -88,6 +88,22 @@ button {
   font-size: 0.9rem;
 }
 
+#directions {
+  max-height: 30vh;
+  margin: 0.75rem 0 0;
+  padding: 0 0 0 1.5rem;
+  overflow-y: auto;
+  font-size: 0.9rem;
+}
+
+#directions li {
+  margin-bottom: 0.35rem;
+}
+
+#directions span {
+  color: #64748b;
+}
+
 .page-link,
 .back-link {
   display: inline-block;
