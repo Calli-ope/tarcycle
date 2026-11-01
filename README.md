@@ -135,6 +135,36 @@ turns.
 Limits: a junction passed while riding on a major road is not counted as a
 crossing (stress covers that riding), which flatters engines using major roads.
 
+### Should the router use GPS popularity?
+
+The table shows what popularity costs; only real trips can show what it gains. With
+the raw GPS data in `data/raw/` (see below):
+
+```powershell
+python -m backend.validate_gps --months 202509 202511
+```
+
+This builds the popularity layer without those months (once), routes a sample of
+their trips with every engine and writes how much each route overlaps the rider's
+track, compared with `networkx_no_gps`, to `data/evaluation/gps_overlap.md`. Only
+aggregates are written. Over 1,000 trips from September and November 2025:
+
+| Engine | Mean overlap | Difference from `networkx_no_gps` (95 % interval) |
+|---|---|---|
+| networkx | 0.483 | +0.023 (+0.015 to +0.030) |
+| networkx_no_gps | 0.460 | |
+| shortest | 0.537 | +0.077 (+0.054 to +0.100) |
+| valhalla | 0.471 | +0.010 (-0.009 to +0.030) |
+| brouter_trekking | 0.510 | +0.049 (+0.031 to +0.068) |
+| brouter_low_traffic | 0.449 | -0.012 (-0.031 to +0.008) |
+
+For scale, two riders making the same trip overlap 0.62 on average. Popularity stays
+on: it brings routes a little closer to real trips at the price of about 100 m on a
+typical route, with no change in travel time. `popularity_weight = 0` turns it off.
+Overlap is evidence rather than the goal: riders also follow habit, 92 % of the fleet
+is e-bikes, and at 20 m it cannot tell a road from a track beside it, which favours
+`shortest`.
+
 ## GPS traces vs OSM
 
 Compares where Smart Bike riders ride with OSM and the router's graph, to find

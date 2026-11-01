@@ -711,8 +711,13 @@ def build(
     settings: CoverageSettings,
     refresh_osm: bool = False,
     routes_file: Path | None = None,
+    exclude_months: tuple[str, ...] = (),
 ) -> dict[str, Any]:
-    files = sorted(locations_dir.glob("locations_*.csv"))
+    files = [
+        path
+        for path in sorted(locations_dir.glob("locations_*.csv"))
+        if not any(month in path.name for month in exclude_months)
+    ]
     if not files:
         raise FileNotFoundError(f"No locations_*.csv files in {locations_dir}")
     area, edges = load_osm_reference(output_dir, settings, refresh_osm)

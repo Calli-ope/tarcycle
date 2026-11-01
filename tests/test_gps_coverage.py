@@ -217,6 +217,14 @@ def test_in_router_network(tags, expected):
     assert in_router_network(tags) is expected
 
 
+def test_build_can_leave_months_out(tmp_path):
+    locations = tmp_path / "Locations"
+    locations.mkdir()
+    _synthetic_trips(users=12).to_csv(locations / "locations_202509.csv", index=False)
+    with pytest.raises(FileNotFoundError):
+        build(locations, tmp_path / "out", SETTINGS, exclude_months=("202509",))
+
+
 def test_valid_route_codes_drops_aborted_rentals(tmp_path):
     path = tmp_path / "routes_2025.csv"
     pd.DataFrame(
