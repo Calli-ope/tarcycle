@@ -40,6 +40,13 @@ MINIMUM_TRIPS = 10
 # expensive, and is dropped if it shares more than this share of its length.
 ALTERNATIVE_PENALTY = 3.0
 MAXIMUM_SHARED_SHARE = 0.7
+# Further from the network than this, the connector to the nearest edge would be
+# a straight line across whatever lies between.
+MAXIMUM_SNAP_M = 300.0
+
+
+class OutsideNetwork(nx.NetworkXNoPath):
+    """A route end is too far from the bicycle network to connect it."""
 
 
 def _as_text(value: Any) -> str:
@@ -272,7 +279,14 @@ class NetworkXRouter:
         """Map both ends of the nearest edge to (distance, connector from point)."""
 
         point = Point(longitude, latitude)
-        edge = self.edges[int(self.tree.query_nearest(self._scaled(point))[0])]
+        scaled = self._scaled(point)
+        nearest = int(self.tree.query_nearest(scaled)[0])
+        edge = self.edges[nearest]
+        distance = self.tree.geometries[nearest].distance(scaled) * 111_320
+        if distance > MAXIMUM_SNAP_M:
+            raise OutsideNetwork(
+                f"{latitude:.5f}, {longitude:.5f} is {distance:.0f} m from the bicycle network."
+            )
         line = self.lines[edge]
         position = line.project(point)
         connectors = {

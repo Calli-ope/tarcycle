@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .gps_layer import load_gps_ways
-from .graph import TERRAIN_DIR, GraphUnavailable, load_graph
+from .graph import STATIONS_FILE, TERRAIN_DIR, GraphUnavailable, load_graph
 from .router import NetworkXRouter
 from .stations import load_stations
 from .brouter import BRouterRouter, BRouterUnavailable
@@ -25,7 +25,6 @@ from .valhalla import ValhallaRouter, ValhallaUnavailable
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-STATIONS_FILE = ROOT_DIR / "data" / "Rattaparklad.csv"
 FRONTEND_DIR = ROOT_DIR / "frontend"
 COVERAGE_DIR = ROOT_DIR / "data" / "gps_coverage"
 COVERAGE_FILES = {
@@ -183,7 +182,8 @@ def route(
     except GraphUnavailable as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
     except nx.NetworkXNoPath as error:
-        raise HTTPException(status_code=422, detail="No bicycle route found.") from error
+        detail = str(error) or "No bicycle route found."
+        raise HTTPException(status_code=422, detail=detail) from error
     if fallback_reason:
         for feature in routes["features"]:
             feature["properties"].update(

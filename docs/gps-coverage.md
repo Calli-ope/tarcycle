@@ -77,7 +77,8 @@ cells), so layers can be rebuilt without the raw data in ~15 s.
 - Joining `gps_ways.geojson` onto the router's graph with `edge_gps_trips`:
   90.5% of its edges get a trip count. Ways flagged `in_bike_graph` but
   absent from it (12.7%) are mostly outside Tartu's boundary (our area has a
-  500 m buffer, the router's has none) and carry 2.7% of trips.
+  500 m buffer, the router's then had none) and carry 2.7% of trips. These
+  shares predate the router's graph growing to cover all stations (2026-11).
 - After footways joined the router graph (join by way id against the cached
   graph, not a pipeline rerun): 141.5 of the 162 km of gaps are now in it,
   94% of gap trip-km; of the real gaps (`separate` + `partly`) 57 of 71 km.

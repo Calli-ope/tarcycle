@@ -6,18 +6,25 @@ starting the app; otherwise the app builds it in the background on startup.
 
 from pathlib import Path
 
+import geopandas as gpd
 import networkx as nx
 import numpy as np
 import osmnx as ox
 import rasterio
 from pyproj import Transformer
-from shapely.geometry import LineString
+from shapely.geometry import LineString, Point, Polygon
+
+from .stations import load_stations
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 GRAPH_FILE = ROOT_DIR / "cache" / "tartu_bike.graphml"
 TERRAIN_DIR = ROOT_DIR / "data"
-OSM_MODEL = "osm_bike_footway_v2"
+STATIONS_FILE = ROOT_DIR / "data" / "Rattaparklad.csv"
+OSM_MODEL = "osm_bike_footway_v4"
+PLACE = "Tartu, Estonia"
+# Around the convex hull of all stations, so routes can leave it a little.
+NETWORK_BUFFER_M = 1500.0
 TERRAIN_MODEL = "dtm_5m_v2"
 OVERPASS_URLS = (
     "https://overpass-api.de/api",
@@ -57,6 +64,22 @@ def edge_line(graph: nx.MultiDiGraph, start, end, data: dict) -> LineString:
     )
 
 
+def network_area() -> Polygon:
+    """Tartu plus all its stations, some of which are in villages outside the city."""
+
+    city = ox.geocode_to_gdf(PLACE).to_crs("EPSG:3301")
+    stations = gpd.GeoSeries(
+        [Point(s.longitude, s.latitude) for s in load_stations(STATIONS_FILE)],
+        crs="EPSG:4326",
+    ).to_crs(city.crs)
+    area = stations.union_all().convex_hull.buffer(NETWORK_BUFFER_M)
+    return (
+        gpd.GeoSeries([area.union(city.geometry.iloc[0])], crs=city.crs)
+        .to_crs("EPSG:4326")
+        .iloc[0]
+    )
+
+
 def download() -> nx.MultiDiGraph:
     ox.settings.useful_tags_way = list(
         dict.fromkeys([*ox.settings.useful_tags_way, *BIKE_TAGS_WAY])
@@ -64,14 +87,15 @@ def download() -> nx.MultiDiGraph:
     ox.settings.useful_tags_node = list(
         dict.fromkeys([*ox.settings.useful_tags_node, *JUNCTION_TAGS_NODE])
     )
+    area = network_area()
     errors = []
     for url in OVERPASS_URLS:
         ox.settings.overpass_url = url
         # Only the main instance answers /status reliably.
         ox.settings.overpass_rate_limit = url == OVERPASS_URLS[0]
         try:
-            return ox.graph_from_place(
-                "Tartu, Estonia", network_type="bike", custom_filter=BIKE_FILTER
+            return ox.graph_from_polygon(
+                area, network_type="bike", custom_filter=BIKE_FILTER
             )
         except Exception as error:  # Overpass mirrors fail in many different ways.
             errors.append(f"{url}: {error}")

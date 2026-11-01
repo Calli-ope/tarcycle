@@ -46,9 +46,9 @@ reachable, NetworkX routes instead and the status line says so.
 ## NetworkX routing model
 
 **Graph** (`cache/tartu_bike.graphml`): OSMnx's bike network plus every
-footway without `bicycle=no`, keeping the `cycleway*`, `surface` and `bicycle`
-tags. Uphill grades are sampled along each edge from `data/*_dtm_5m.tif` (four
-tiles, central Tartu).
+footway without `bicycle=no`, over Tartu and the convex hull of all stations plus
+1.5 km, as some stations are in villages outside the city. Uphill grades are
+sampled along each edge from `data/*_dtm_5m.tif` (four tiles, central Tartu).
 
 **Edge cost** = length × factors from `RoutingPreferences` in
 `backend/models.py`:
@@ -77,9 +77,11 @@ facility type 20 m.
 **Search**: A* over edges (so transitions can be priced) with an estimate that
 never overestimates, so results equal Dijkstra's. It returns the cheapest route
 if it is at most 1.5× the shortest (`maximum_detour_factor`), otherwise the
-shortest. The alternative is the cheapest route once the best route's edges
-cost 3× more; it is dropped if it shares over 70 % of its length with the best
-route or exceeds the detour limit. The page draws it in grey; click to switch.
+shortest. A point over 300 m from the network gets an error rather than a straight
+line across the gap. The
+alternative is the cheapest route once the best route's edges cost 3× more; it is
+dropped if it shares over 70 % of its length with the best route or exceeds the
+detour limit. The page draws it in grey; click to switch.
 
 **Travel time** (`time_minutes`, for a mostly e-bike fleet): 18 km/h, ×0.85 on
 paths, at most 12 km/h on sidewalks, ×0.7 on rough surfaces, slower uphill,
