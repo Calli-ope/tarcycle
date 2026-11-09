@@ -1,0 +1,10 @@
+# Demand prediction (prediction/). Kept apart from requirements.txt so the
+# routing backend's image does not carry LightGBM.
+pandas>=2.2
+numpy>=1.24
+lightgbm>=4.0
+
+# Notebooks (notebooks/prediction.ipynb)
+ipykernel>=6.0
+matplotlib>=3.8
+scipy>=1.11

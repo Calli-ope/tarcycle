@@ -221,3 +221,17 @@ Candidates should be checked on the ground (or on imagery) before anything is
 edited in OSM. Do not upload the traces themselves to OSM.
 
 Tests: `python -m pytest`.
+
+## Demand prediction
+
+Hourly pickups and returns per station, forecast 1–24 h ahead with LightGBM and
+compared against simple baselines. Needs the private trip export. Method,
+commands and results: [docs/prediction.md](docs/prediction.md).
+
+```bash
+python -m pip install -r requirements-prediction.txt
+python -m prediction.trips --routes ../Routes/routes_2025.csv
+python -m prediction.demand
+python -m prediction.weather
+python -m prediction.evaluate
+```
