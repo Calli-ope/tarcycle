@@ -88,7 +88,9 @@ dropped if it shares over 70 % of its length with the best route or exceeds the
 detour limit. The page draws it in grey; click to switch.
 
 **Directions** come from the route's own edges and way names, so they match the
-line on the map. Stretches under 20 m get no instruction.
+line on the map. An unnamed path, cycleway or sidewalk is named after the street
+it runs beside ("the cycleway along Riia"). Stretches under 20 m, and going straight
+on along the same street or onto a way with no name, get no instruction.
 
 **Travel time** (`time_minutes`, for a mostly e-bike fleet): 18 km/h, ×0.85 on
 paths, at most 12 km/h on sidewalks, ×0.7 on rough surfaces, slower uphill,

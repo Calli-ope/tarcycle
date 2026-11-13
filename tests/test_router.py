@@ -117,6 +117,63 @@ def test_directions_follow_the_route():
     )
 
 
+def test_directions_name_a_cycleway_by_its_street_and_skip_straight_on_unnamed_ways():
+    # A cycleway 11 m beside Riia, then straight on along a path through a park.
+    graph = nx.MultiDiGraph(crs="EPSG:4326")
+    nodes = {
+        "a": (LON, LAT),
+        "b": (LON + 0.01, LAT),
+        "c": (LON, LAT + 0.0001),
+        "d": (LON + 0.01, LAT + 0.0001),
+        "e": (LON + 0.015, LAT + 0.0001),
+        "park": (LON, LAT + 0.02),
+    }
+    for name, (x, y) in nodes.items():
+        graph.add_node(name, x=x, y=y)
+    for start, end, length, tags in (
+        ("a", "b", 583.0, {"highway": "residential", "name": "Riia"}),
+        ("c", "d", 583.0, {"highway": "cycleway"}),
+        ("d", "e", 292.0, {"highway": "path"}),
+        ("c", "park", 2200.0, {"highway": "footway"}),
+    ):
+        graph.add_edge(start, end, length=length, **tags)
+        graph.add_edge(end, start, length=length, **tags)
+    steps = NetworkXRouter(graph).route_geojson(LAT + 0.0001, LON, LAT + 0.0001, LON + 0.015)[
+        "features"
+    ][0]["properties"]["directions"]
+    assert steps == [
+        {"instruction": "Head east on the cycleway along Riia.", "length_m": 875.0},
+        {"instruction": "You have arrived.", "length_m": 0.0},
+    ]
+
+
+def test_directions_skip_moving_onto_a_cycleway_along_the_same_street():
+    graph = nx.MultiDiGraph(crs="EPSG:4326")
+    nodes = {
+        "a": (LON, LAT),
+        "b": (LON + 0.005, LAT),
+        "f": (LON + 0.01, LAT),
+        "c": (LON + 0.005, LAT + 0.0001),
+        "d": (LON + 0.01, LAT + 0.0001),
+        "park": (LON, LAT + 0.02),
+    }
+    for name, (x, y) in nodes.items():
+        graph.add_node(name, x=x, y=y)
+    for start, end, length, tags in (
+        ("a", "b", 292.0, {"highway": "residential", "name": "Riia"}),
+        ("b", "f", 292.0, {"highway": "residential", "name": "Riia"}),
+        ("b", "c", 11.0, {"highway": "path"}),
+        ("c", "d", 292.0, {"highway": "cycleway"}),
+        ("a", "park", 2200.0, {"highway": "footway"}),
+    ):
+        graph.add_edge(start, end, length=length, **tags)
+        graph.add_edge(end, start, length=length, **tags)
+    steps = NetworkXRouter(graph).route_geojson(LAT, LON, LAT + 0.0001, LON + 0.01)[
+        "features"
+    ][0]["properties"]["directions"]
+    assert [step["instruction"] for step in steps] == ["Head east on Riia.", "You have arrived."]
+
+
 def test_contraflow_adds_the_reverse_of_ways_open_to_bikes_both_ways():
     graph = nx.MultiDiGraph()
     line = LineString([(0, 0), (1, 1)])

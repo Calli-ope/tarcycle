@@ -47,8 +47,10 @@ MAXIMUM_SNAP_M = 300.0
 MAXIMUM_LENGTH_SURCHARGE = 8.0
 SURCHARGE_STEPS = 6
 # Directions: stretches shorter than this (often a crossing) get no instruction,
-# and a bend on the same way is only mentioned from this angle.
+# going on within the first angle is "straight on", and a bend on the same way is
+# only mentioned from the second.
 MINIMUM_STRETCH_M = 20.0
+SLIGHT_TURN_DEGREES = 30.0
 SHARP_BEND_DEGREES = 60.0
 COMPASS = ("east", "northeast", "north", "northwest", "west", "southwest", "south", "southeast")
 
@@ -159,7 +161,7 @@ def _turn_words(turn: float) -> str:
 
     side = "left" if turn > 0 else "right"
     size = abs(turn)
-    if size < 30:
+    if size < SLIGHT_TURN_DEGREES:
         return "Continue"
     if size < 60:
         return f"Bear {side}"
@@ -216,6 +218,20 @@ class NetworkXRouter:
             )
         ]
         self.sidewalks = set(self._beside(footways, roads))
+        # Directions describe an unnamed path by the street it runs beside.
+        named_roads = [
+            edge
+            for edge in self.edges
+            if not _has_any(highway[edge], NOT_ROADS)
+            and "service" not in highway[edge]
+            and self._way_name(edge)
+        ]
+        unnamed_ways = [
+            edge
+            for edge in self.edges
+            if _has_any(highway[edge], NOT_ROADS) and not self._way_name(edge)
+        ]
+        self.alongside = self._alongside(unnamed_ways, named_roads)
         self.cost = {
             edge: edge_cost(
                 graph.edges[edge],
@@ -272,15 +288,20 @@ class NetworkXRouter:
     def _scaled(self, geometry):
         return shapely.transform(geometry, lambda coords: coords * [self.x_scale, 1])
 
+    def _quarter_points(self, edges: list[Edge]) -> np.ndarray:
+        """Each edge's quarter, middle and three-quarter points, one row per edge."""
+
+        lines = self._scaled(np.array([self.lines[edge] for edge in edges]))
+        return shapely.line_interpolate_point(
+            lines[:, None], [0.25, 0.5, 0.75], normalized=True
+        )
+
     def _beside(self, edges: list[Edge], roads: list[Edge]) -> list[Edge]:
         """Edges whose quarter, middle and three-quarter points all lie within
         ROADSIDE_DISTANCE_M of one of the roads."""
 
         tree = shapely.STRtree([self._scaled(self.lines[edge]) for edge in roads])
-        lines = self._scaled(np.array([self.lines[edge] for edge in edges]))
-        points = shapely.line_interpolate_point(
-            lines[:, None], [0.25, 0.5, 0.75], normalized=True
-        )
+        points = self._quarter_points(edges)
         near = np.zeros(points.size, dtype=bool)
         near[
             tree.query(
@@ -294,6 +315,27 @@ class NetworkXRouter:
             for edge, beside_road in zip(edges, near.reshape(points.shape).all(axis=1))
             if beside_road
         ]
+
+    def _alongside(self, edges: list[Edge], roads: list[Edge]) -> dict[Edge, str]:
+        """The street each edge runs beside: the nearest named road within
+        ROADSIDE_DISTANCE_M of its quarter, middle and three-quarter points, if it
+        is the same street at all three."""
+
+        if not edges or not roads:
+            return {}
+        tree = shapely.STRtree([self._scaled(self.lines[edge]) for edge in roads])
+        point_index, road_index = tree.query_nearest(
+            self._quarter_points(edges).ravel(), max_distance=ROADSIDE_DISTANCE_M / 111_320
+        )
+        names: dict[int, str] = {}
+        for point, road in zip(point_index.tolist(), road_index.tolist()):
+            names.setdefault(point, self._way_name(roads[road]))
+        alongside = {}
+        for index, edge in enumerate(edges):
+            found = {names.get(3 * index + quarter) for quarter in range(3)}
+            if len(found) == 1 and None not in found:
+                alongside[edge] = found.pop()
+        return alongside
 
     def _snap(self, latitude: float, longitude: float):
         """Map both ends of the nearest edge to (distance, connector from point, edge)."""
@@ -349,18 +391,25 @@ class NetworkXRouter:
             delay += LEFT_TURN_DELAY_S
         return cost, delay
 
-    def _way_label(self, edge: Edge) -> str:
+    def _way_name(self, edge: Edge) -> str | None:
         name = self.graph.edges[edge].get("name")
         if isinstance(name, (list, tuple)):
             name = name[0]
+        return str(name) if name else None
+
+    def _way_label(self, edge: Edge) -> str:
+        name = self._way_name(edge)
         if name:
-            return str(name)
-        if edge in self.sidewalks:
-            return "the sidewalk"
+            return name
         highway = _as_text(self.graph.edges[edge].get("highway"))
-        if "cycleway" in highway:
-            return "the cycleway"
-        return "the path" if _has_any(highway, NOT_ROADS) else "the road"
+        if edge in self.sidewalks:
+            kind = "sidewalk"
+        elif "cycleway" in highway:
+            kind = "cycleway"
+        else:
+            kind = "path" if _has_any(highway, NOT_ROADS) else "road"
+        street = self.alongside.get(edge)
+        return f"the {kind} along {street}" if street else f"the {kind}"
 
     def _directions(self, route: list[Edge], lead_in: tuple, lead_out: tuple) -> list[dict[str, Any]]:
         """Instructions from the route's own edges and the stretches of the ways it
@@ -378,16 +427,32 @@ class NetworkXRouter:
             *lead(*lead_out),
         ]
         steps: list[dict[str, Any]] = []
-        label = heading = None
-        for way, length, start, end in pieces:
+        label = heading = street = None
+        # A short start (before the first junction) joins the first instruction.
+        carried = 0.0
+        for index, (way, length, start, end) in enumerate(pieces):
+            if not steps and length < MINIMUM_STRETCH_M and index < len(pieces) - 1:
+                carried += length
+                continue
             if steps and length < MINIMUM_STRETCH_M:
                 steps[-1]["length_m"] += length
                 continue
             turn = 0.0 if heading is None else (start - heading + 180) % 360 - 180
             heading = end
             next_label = self._way_label(way)
+            way_street = self._way_name(way) or self.alongside.get(way)
             if not steps:
                 instruction = f"Head {COMPASS[round(start / 45) % 8]} on {next_label}"
+                length += carried
+            elif (
+                next_label != label
+                and abs(turn) < SLIGHT_TURN_DEGREES
+                and way_street in (None, street)
+            ):
+                # Straight on along the same street, or onto a way with no name to
+                # give: nothing to do.
+                steps[-1]["length_m"] += length
+                continue
             elif next_label != label:
                 instruction = f"{_turn_words(turn)} onto {next_label}"
             elif abs(turn) >= SHARP_BEND_DEGREES:
@@ -395,7 +460,7 @@ class NetworkXRouter:
             else:
                 steps[-1]["length_m"] += length
                 continue
-            label = next_label
+            label, street = next_label, way_street
             steps.append({"instruction": f"{instruction}.", "length_m": length})
         for step in steps:
             step["length_m"] = round(step["length_m"], 1)
